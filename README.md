@@ -424,3 +424,91 @@ conf = orch.confirm_and_book(ConfirmPlanRequest(
 Hackathon educational prototype.
 
 **This prototype simulates booking and payments. It does not perform real transportation bookings or real financial transactions.**
+
+---
+
+## Next.js Frontend
+
+A polished production-style web frontend now lives in `frontend/`. The Streamlit UI remains available as a fallback demo.
+
+### Frontend Architecture
+
+The frontend uses a lightweight MVC-inspired structure:
+
+- `src/models`: TypeScript interfaces and Zod schemas matching the FastAPI/Pydantic contracts.
+- `src/services`: typed API clients for journey, wallet, booking, places, preferences, and system health.
+- `src/controllers`: React Query hooks coordinating user actions and mutations.
+- `src/components`: reusable layout, assistant, journey, wallet, monitoring, and shared UI components.
+- `src/app`: Next.js App Router screens.
+- `src/store`: small persisted Zustand store for the active prototype trip and selected itinerary.
+
+### Frontend Setup
+
+Terminal 1:
+
+```powershell
+cd "C:\Users\VIRAJ\OneDrive\Desktop\commute os\Commute_OS"
+python -m uvicorn api.main:app --reload --host 127.0.0.1 --port 8000
+```
+
+Terminal 2:
+
+```powershell
+cd "C:\Users\VIRAJ\OneDrive\Desktop\commute os\Commute_OS\frontend"
+npm install
+npm run dev
+```
+
+Open:
+
+```text
+http://localhost:3000
+```
+
+### Environment Variable
+
+Create `frontend/.env.local` from `frontend/.env.example` if needed:
+
+```powershell
+copy .env.example .env.local
+```
+
+```env
+NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:8000
+```
+
+### Main UI Routes
+
+| Route | Purpose |
+|-------|---------|
+| `/` | AI-first home, prompt examples, backend status, wallet summary |
+| `/plan` | Natural-language planning and ranked multimodal recommendations |
+| `/journey/[tripId]` | Selected journey timeline and leg details |
+| `/booking/[tripId]` | Booking review, wallet balance, consent gate |
+| `/wallet` | Journey Account, top-up, ledger, refunds and debits |
+| `/active` | Live journey status and demo disruption |
+| `/preferences` | Travel DNA, autonomy level, feedback learning |
+| `/history` | Past and simulated journey states |
+
+### Demo Flow
+
+Use the built-in prompt:
+
+> I have an interview tomorrow at Jio Institute in Navi Mumbai. I am travelling from Ahmedabad with one suitcase. I need to arrive one hour early and return the same evening. Prioritize reliability and time.
+
+Flow:
+
+Home → Load demo scenario → Plan options → Select itinerary → Review booking → Top up wallet if desired → Explicit consent → Confirm complete journey → Active journey → Trigger disruption → Alternative journey → Wallet reconciliation → Feedback.
+
+### Troubleshooting
+
+| Issue | Fix |
+|-------|-----|
+| Frontend shows backend offline | Start FastAPI on `127.0.0.1:8000` or update `NEXT_PUBLIC_API_BASE_URL`. |
+| Confirm says unknown `trip_id` | Plan and confirm against the same running FastAPI process; plans are in-memory for this prototype. |
+| PowerShell blocks `npm` | Use `npm.cmd install`, `npm.cmd run dev`, or adjust PowerShell execution policy. |
+| Wallet appears empty | Top up in `/wallet` or `/booking/[tripId]`; wallet DB is local SQLite. |
+
+### Simulated Booking and Payment Disclaimer
+
+The frontend is a hackathon prototype client. All bookings, operator references, wallet top-ups, debits, refunds, and reconciliations are simulated through the existing Python backend. No real transport inventory or payment processor is used.

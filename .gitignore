@@ -57,3 +57,8 @@ Desktop.ini
 
 # Local tooling
 .grok/
+
+# Frontend generated files
+frontend/node_modules/
+frontend/.next/
+frontend/tsconfig.tsbuildinfo

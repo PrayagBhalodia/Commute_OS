@@ -1,13 +1,18 @@
 """Maps / distance / geocode tools for DMOS.
 
-Uses Google Maps REST APIs when GOOGLE_MAPS_API_KEY is set.
-Falls back to offline haversine + India place catalog for the prototype.
+Geocoding provider order (each optional, always degrades gracefully):
+  1. Offline India place catalog  — fast, curated, works with zero config.
+  2. OpenStreetMap Nominatim       — free, no API key, for unknown free text.
+  3. Google Maps                   — only when GOOGLE_MAPS_API_KEY is set.
+Distances always use the offline haversine + speed model unless Google's
+Distance Matrix is configured.
 """
 
 from __future__ import annotations
 
 import math
 import os
+import threading
 from typing import Any, Optional
 
 from tools.places_india import (
@@ -22,6 +27,100 @@ try:
     import httpx
 except ImportError:  # pragma: no cover
     httpx = None  # type: ignore
+
+
+# ---------------------------------------------------------------------------
+# OpenStreetMap / Nominatim (free geocoder, no API key required)
+# ---------------------------------------------------------------------------
+
+_NOMINATIM_BASE = os.environ.get(
+    "NOMINATIM_BASE_URL", "https://nominatim.openstreetmap.org"
+).rstrip("/")
+# Nominatim's usage policy requires a descriptive, contactable User-Agent.
+_NOMINATIM_UA = os.environ.get(
+    "NOMINATIM_USER_AGENT", "DMOS-CommuteSuperapp/1.0 (contact: set NOMINATIM_USER_AGENT)"
+)
+# Simple process-wide cache to respect the ~1 req/sec rate limit.
+_geo_cache: dict[str, Optional[dict[str, Any]]] = {}
+_geo_lock = threading.Lock()
+
+
+def nominatim_enabled() -> bool:
+    """True unless explicitly disabled and httpx is importable."""
+    flag = os.environ.get("DMOS_USE_NOMINATIM", "1").strip().lower()
+    return flag not in ("0", "false", "no", "off") and httpx is not None
+
+
+def _nominatim_search(query: str) -> Optional[dict[str, Any]]:
+    """Free-text geocode via Nominatim; cached, None on any failure."""
+    key = f"s:{query.strip().lower()}"
+    with _geo_lock:
+        if key in _geo_cache:
+            return _geo_cache[key]
+    result: Optional[dict[str, Any]] = None
+    try:
+        params = {
+            "q": query,
+            "format": "jsonv2",
+            "limit": 1,
+            "addressdetails": 1,
+            "countrycodes": "in",
+        }
+        with httpx.Client(timeout=8.0, headers={"User-Agent": _NOMINATIM_UA}) as client:
+            resp = client.get(f"{_NOMINATIM_BASE}/search", params=params)
+            data = resp.json()
+        if isinstance(data, list) and data:
+            r0 = data[0]
+            addr = r0.get("address", {}) or {}
+            result = {
+                "place_id": f"osm-{r0.get('osm_type', 'n')[0]}{r0.get('osm_id', '')}",
+                "name": (r0.get("name") or r0.get("display_name", query).split(",")[0]).strip(),
+                "address": r0.get("display_name", query),
+                "city": addr.get("city") or addr.get("town") or addr.get("village")
+                or addr.get("state_district"),
+                "state": addr.get("state"),
+                "lat": float(r0["lat"]),
+                "lng": float(r0["lon"]),
+                "place_type": "custom",
+                "metadata": {"osm_class": r0.get("class"), "osm_type_detail": r0.get("type")},
+            }
+    except Exception:  # noqa: BLE001
+        result = None
+    with _geo_lock:
+        _geo_cache[key] = result
+    return result
+
+
+def _nominatim_reverse(lat: float, lng: float) -> Optional[dict[str, Any]]:
+    """Reverse geocode via Nominatim; cached, None on any failure."""
+    key = f"r:{lat:.4f},{lng:.4f}"
+    with _geo_lock:
+        if key in _geo_cache:
+            return _geo_cache[key]
+    result: Optional[dict[str, Any]] = None
+    try:
+        params = {"lat": lat, "lon": lng, "format": "jsonv2", "addressdetails": 1}
+        with httpx.Client(timeout=8.0, headers={"User-Agent": _NOMINATIM_UA}) as client:
+            resp = client.get(f"{_NOMINATIM_BASE}/reverse", params=params)
+            data = resp.json()
+        if isinstance(data, dict) and data.get("lat"):
+            addr = data.get("address", {}) or {}
+            result = {
+                "place_id": f"osm-{data.get('osm_type', 'n')[0]}{data.get('osm_id', '')}",
+                "name": (data.get("name") or data.get("display_name", "").split(",")[0]).strip()
+                or f"Pin ({lat:.4f}, {lng:.4f})",
+                "address": data.get("display_name", f"{lat:.5f},{lng:.5f}"),
+                "city": addr.get("city") or addr.get("town") or addr.get("village"),
+                "state": addr.get("state"),
+                "lat": lat,
+                "lng": lng,
+                "place_type": "custom",
+            }
+    except Exception:  # noqa: BLE001
+        result = None
+    with _geo_lock:
+        _geo_cache[key] = result
+    return result
 
 
 def haversine_km(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
@@ -46,15 +145,21 @@ def _google_key() -> str:
 def geocode(query: str) -> Optional[dict[str, Any]]:
     """Resolve a free-text place to lat/lng.
 
-    Prefers offline India catalog; optionally enriches via Google Geocoding.
+    Order: curated India catalog → free Nominatim → Google (if configured).
     """
+    # 1. Curated catalog is authoritative for known India places (offline, and
+    #    carries airport/city metadata the journey builder relies on).
     local = resolve_place_name(query)
-    if local and not google_maps_enabled():
-        return {
-            **local,
-            "source": "catalog",
-        }
+    if local:
+        return {**local, "source": "catalog"}
 
+    # 2. Free OpenStreetMap Nominatim for anything not in the catalog.
+    if nominatim_enabled() and query.strip():
+        nom = _nominatim_search(query)
+        if nom:
+            return {**nom, "source": "nominatim"}
+
+    # 3. Optional Google Geocoding when a key is configured.
     if google_maps_enabled() and query.strip():
         try:
             url = "https://maps.googleapis.com/maps/api/geocode/json"
@@ -78,18 +183,32 @@ def geocode(query: str) -> Optional[dict[str, Any]]:
                     "metadata": {"google_types": r0.get("types", [])},
                 }
         except Exception:
-            # Fall through to local catalog / heuristic
+            # Fall through to None below.
             pass
 
-    if local:
-        return {**local, "source": "catalog"}
-
-    # Last resort: treat as custom label at India centroid-ish
+    # Last resort: unresolved.
     return None
 
 
 def reverse_geocode(lat: float, lng: float) -> dict[str, Any]:
-    """Nearest catalog place or Google reverse geocode."""
+    """Resolve coordinates to a place.
+
+    Order: nearest curated catalog place (≤25 km) → free Nominatim → Google
+    (if configured) → raw coordinate pin.
+    """
+    best = min(
+        INDIA_PLACES,
+        key=lambda p: haversine_km(lat, lng, p["lat"], p["lng"]),
+    )
+    dist = haversine_km(lat, lng, best["lat"], best["lng"])
+    if dist < 25:
+        return {**best, "source": "nearest_catalog", "distance_to_match_km": round(dist, 2)}
+
+    if nominatim_enabled():
+        nom = _nominatim_reverse(lat, lng)
+        if nom:
+            return {**nom, "source": "nominatim"}
+
     if google_maps_enabled():
         try:
             url = "https://maps.googleapis.com/maps/api/geocode/json"
@@ -113,13 +232,6 @@ def reverse_geocode(lat: float, lng: float) -> dict[str, Any]:
         except Exception:
             pass
 
-    best = min(
-        INDIA_PLACES,
-        key=lambda p: haversine_km(lat, lng, p["lat"], p["lng"]),
-    )
-    dist = haversine_km(lat, lng, best["lat"], best["lng"])
-    if dist < 25:
-        return {**best, "source": "nearest_catalog", "distance_to_match_km": round(dist, 2)}
     return {
         "place_id": f"custom-{lat:.4f}-{lng:.4f}",
         "name": f"Pin ({lat:.4f}, {lng:.4f})",
@@ -273,6 +385,7 @@ def directions_summary(
 __all__ = [
     "haversine_km",
     "google_maps_enabled",
+    "nominatim_enabled",
     "geocode",
     "reverse_geocode",
     "distance_matrix",

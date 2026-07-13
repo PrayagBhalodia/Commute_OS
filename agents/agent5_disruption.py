@@ -14,6 +14,7 @@ from agents.agent2_journey import JourneyCompositionAgent
 from agents.agent3_booking import BookingAgent, BookingError
 from agents.agent4_wallet import WalletAgent
 from agents.user_memory import UserMemoryStore
+from tools.llm import gemini_enabled, generate_text
 from api.schemas import (
     BookingConfirmation,
     BookingRequest,
@@ -213,6 +214,12 @@ class DisruptionAgent:
                     itinerary_id=revised.itinerary_id,
                 )
 
+                # Optional: Gemini narrates the reroute for the traveller.
+                if gemini_enabled():
+                    rationale = self._llm_rationale(request, revised, o.name, d.name)
+                    if rationale:
+                        think("thought", "Reroute rationale (Gemini)", rationale, agent="agent5")
+
                 # Reconcile money: original remaining value vs new
                 # After cancel, wallet was refunded; rebook will debit new total
                 think(
@@ -310,6 +317,26 @@ class DisruptionAgent:
             status=status,
             message=msg,
         )
+
+    def _llm_rationale(
+        self,
+        request: DisruptionRequest,
+        revised: ItineraryOption,
+        origin_name: str,
+        dest_name: str,
+    ) -> Optional[str]:
+        """One-sentence, reassuring explanation of the reroute, or None."""
+        modes = " → ".join(lg.mode.value for lg in revised.legs)
+        prompt = (
+            "You are a mobility assistant handling a mid-trip disruption. "
+            "In ONE short, reassuring sentence (<= 30 words, plain text), tell "
+            "the traveller how you are getting them back on track.\n\n"
+            f"Disruption: {request.reason} (severity {request.severity}).\n"
+            f"New route {origin_name} → {dest_name}: {modes}, "
+            f"total ₹{revised.total_price:.0f}, "
+            f"{revised.total_duration_minutes:.0f} min."
+        )
+        return generate_text(prompt, temperature=0.4)
 
     def _infer_od_from_booking(self, trip_id: str, leg_id: str) -> tuple[str, str]:
         """Best-effort origin/destination from stored goal context JSON."""

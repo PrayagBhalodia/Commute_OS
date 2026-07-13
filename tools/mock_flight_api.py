@@ -22,6 +22,24 @@ _BASE_FARES: dict[tuple[str, str], float] = {
     ("Pune", "Hyderabad"): 3700.0,
 }
 
+# Distance-based fare model (used when a route isn't in the table above).
+_FLIGHT_BASE_FARE = 1800.0    # fixed component (taxes, airport fees)
+_FLIGHT_PER_KM = 5.5          # sector distance component
+_FLIGHT_MIN_FARE = 2500.0
+_FLIGHT_FLAT_FALLBACK = 4500.0  # legacy fallback when distance is unknown
+
+
+def _flight_base_fare(
+    origin: str, destination: str, distance_km: Optional[float]
+) -> float:
+    """Base flight fare: curated route → distance model → flat fallback."""
+    table = _BASE_FARES.get((origin, destination))
+    if table is not None:
+        return table
+    if distance_km is not None and distance_km > 0:
+        return max(_FLIGHT_MIN_FARE, _FLIGHT_BASE_FARE + distance_km * _FLIGHT_PER_KM)
+    return _FLIGHT_FLAT_FALLBACK
+
 
 def _stable_ref(prefix: str, seed: str) -> str:
     digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()[:6].upper()
@@ -46,17 +64,21 @@ def get_flight_quotes(
     origin: str,
     destination: str,
     operator: str = "IndiGo",
+    distance_km: Optional[float] = None,
     failure_rate: float = 0.05,
     latency_seconds: float = 0.05,
     force_failure: bool = False,
 ) -> list[dict[str, Any]]:
-    """Return mock flight quotes for origin → destination."""
+    """Return mock flight quotes for origin → destination.
+
+    When ``distance_km`` is supplied, the sector fare scales with distance.
+    """
     _simulate_latency(latency_seconds)
     seed = f"quote-flt-{origin}-{destination}-{operator}"
     if _should_fail(force_failure, failure_rate, seed):
         return []
 
-    base = _BASE_FARES.get((origin, destination), 4500.0)
+    base = _flight_base_fare(origin, destination, distance_km)
     operators = [operator] if operator else ["IndiGo", "Air India", "Akasa Air"]
     quotes: list[dict[str, Any]] = []
     for idx, op in enumerate(operators):

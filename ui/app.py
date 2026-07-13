@@ -195,38 +195,232 @@ def render_cot(steps: list[dict]) -> None:
                 st.json(s["data"])
 
 
-def render_map(places: list[dict]) -> None:
-    import pandas as pd
+@st.cache_data(show_spinner=False)
+def geocode_point(name: str) -> Optional[tuple[float, float]]:
+    """Resolve a place name to (lat, lng) via the catalog + Nominatim. Cached."""
+    if not name:
+        return None
+    try:
+        from tools.maps_api import geocode
 
-    rows = []
-    for p in places:
-        rows.append(
-            {
-                "lat": p["lat"],
-                "lon": p["lng"],
-                "name": p["name"],
-                "type": p.get("place_type", ""),
-            }
+        g = geocode(name)
+        if g:
+            return float(g["lat"]), float(g["lng"])
+    except Exception:
+        pass
+    return None
+
+
+@st.cache_data(show_spinner=False)
+def osrm_route(start: tuple[float, float], end: tuple[float, float]) -> Optional[list[list[float]]]:
+    """Real driving-road geometry [[lng,lat], …] via the free OSRM API. Cached.
+
+    Returns None on any failure so the caller can fall back to a synthetic line.
+    """
+    import httpx
+
+    try:
+        url = (
+            "https://router.project-osrm.org/route/v1/driving/"
+            f"{start[1]},{start[0]};{end[1]},{end[0]}"
         )
-    # Highlight selected O/D
-    rows.append(
-        {
-            "lat": st.session_state.origin_lat,
-            "lon": st.session_state.origin_lng,
-            "name": f"ORIGIN: {st.session_state.origin_name}",
-            "type": "origin",
-        }
+        r = httpx.get(
+            url,
+            params={"overview": "full", "geometries": "geojson"},
+            timeout=8.0,
+            headers={"User-Agent": "DMOS-CommuteSuperapp/1.0"},
+        )
+        data = r.json()
+        if data.get("code") == "Ok" and data.get("routes"):
+            return data["routes"][0]["geometry"]["coordinates"]
+    except Exception:
+        pass
+    return None
+
+
+def wavy_line(
+    start: tuple[float, float],
+    end: tuple[float, float],
+    waves: int = 6,
+    amplitude_frac: float = 0.05,
+    n: int = 64,
+) -> list[list[float]]:
+    """A gently wavy [[lng,lat], …] line between two points (road illustration).
+
+    Amplitude is proportional to the leg length so short and long hops both look
+    natural. Used when real road geometry is unavailable.
+    """
+    import math
+
+    (lat1, lng1), (lat2, lng2) = start, end
+    dlat, dlng = lat2 - lat1, lng2 - lng1
+    dist = math.hypot(dlat, dlng)
+    if dist == 0:
+        return [[lng1, lat1], [lng2, lat2]]
+    # Unit vector perpendicular to the leg direction, in (lng, lat) space.
+    perp_lng, perp_lat = -dlat / dist, dlng / dist
+    amp = amplitude_frac * dist
+    pts: list[list[float]] = []
+    for i in range(n + 1):
+        t = i / n
+        base_lat = lat1 + dlat * t
+        base_lng = lng1 + dlng * t
+        # Fade the wave out at both ends so it meets the stops cleanly.
+        envelope = math.sin(t * math.pi)
+        off = math.sin(t * math.pi * waves) * amp * envelope
+        pts.append([base_lng + perp_lng * off, base_lat + perp_lat * off])
+    return pts
+
+
+# Modes drawn as roads (follow real road geometry / wavy); others fly straight.
+_ROAD_MODES = {"cab", "auto", "bus", "metro", "train"}
+_ROAD_COLOR = [0, 120, 255]      # blue road
+_AIR_COLOR = [255, 140, 0]       # orange flight hop
+
+
+def build_route(itin: dict) -> dict:
+    """Build map geometry for an itinerary.
+
+    Returns {"waypoints": [{lat,lng,name}], "segments": [{path,color,mode}]}
+    where road legs follow real road geometry (OSRM) or a wavy fallback, and
+    flight legs are drawn as a straight hop.
+    """
+    waypoints: list[dict] = []
+    segments: list[dict] = []
+    prev_name: Optional[str] = None
+
+    def add_wp(name: Optional[str], latlng: Optional[tuple[float, float]]) -> None:
+        nonlocal prev_name
+        if name and name != prev_name and latlng:
+            waypoints.append({"lat": latlng[0], "lng": latlng[1], "name": name})
+        if name:
+            prev_name = name
+
+    for lg in itin.get("legs") or []:
+        o_name, d_name = lg.get("origin"), lg.get("destination")
+        o = geocode_point(o_name) if o_name else None
+        d = geocode_point(d_name) if d_name else None
+        add_wp(o_name, o)
+        add_wp(d_name, d)
+        if not (o and d):
+            continue
+        mode = str(lg.get("mode", "")).lower()
+        if mode in _ROAD_MODES:
+            path = osrm_route(o, d) or wavy_line(o, d)
+            color = _ROAD_COLOR
+        else:  # flight (and any unknown mode) → straight hop
+            path = [[o[1], o[0]], [d[1], d[0]]]
+            color = _AIR_COLOR
+        segments.append({"path": path, "color": color, "mode": mode})
+
+    return {"waypoints": waypoints, "segments": segments}
+
+
+def build_od_route() -> dict:
+    """Pre-plan geometry: a single road leg from origin → destination."""
+    o = (st.session_state.origin_lat, st.session_state.origin_lng)
+    d = (st.session_state.dest_lat, st.session_state.dest_lng)
+    path = osrm_route(o, d) or wavy_line(o, d)
+    return {
+        "waypoints": [
+            {"lat": o[0], "lng": o[1], "name": f"Origin · {st.session_state.origin_name}"},
+            {"lat": d[0], "lng": d[1], "name": f"Destination · {st.session_state.dest_name}"},
+        ],
+        "segments": [{"path": path, "color": _ROAD_COLOR, "mode": "cab"}],
+    }
+
+
+def render_map(route: dict) -> None:
+    """Draw the route (road-following segments + relative-size stops)."""
+    import pandas as pd
+    import pydeck as pdk
+
+    waypoints = route.get("waypoints") or []
+    segments = route.get("segments") or []
+    if not waypoints:
+        st.info("Enter an origin and destination to see the route.")
+        return
+
+    layers = []
+
+    # Route segments: road legs follow real roads; flights are straight hops.
+    if segments:
+        seg_df = pd.DataFrame(
+            [{"path": s["path"], "color": s["color"]} for s in segments]
+        )
+        layers.append(
+            pdk.Layer(
+                "PathLayer",
+                data=seg_df,
+                get_path="path",
+                get_color="color",
+                width_min_pixels=4,
+                get_width=5,
+                cap_rounded=True,
+                joint_rounded=True,
+            )
+        )
+
+    # Waypoint markers with RELATIVE sizes: origin/destination big, stops small.
+    n = len(waypoints)
+    wp_rows = []
+    for i, p in enumerate(waypoints):
+        if i == 0:
+            color, radius = [0, 170, 70], 12000        # origin — green, large
+        elif i == n - 1:
+            color, radius = [220, 45, 45], 12000        # destination — red, large
+        else:
+            color, radius = [255, 160, 0], 6000         # stop — amber, small
+        wp_rows.append(
+            {"lat": p["lat"], "lon": p["lng"], "name": p["name"], "color": color, "radius": radius}
+        )
+    wp_df = pd.DataFrame(wp_rows)
+    layers.append(
+        pdk.Layer(
+            "ScatterplotLayer",
+            data=wp_df,
+            get_position="[lon, lat]",
+            get_fill_color="color",
+            get_radius="radius",
+            radius_min_pixels=5,
+            radius_max_pixels=16,
+            stroked=True,
+            get_line_color="[255, 255, 255]",
+            line_width_min_pixels=1,
+            pickable=True,
+        )
     )
-    rows.append(
-        {
-            "lat": st.session_state.dest_lat,
-            "lon": st.session_state.dest_lng,
-            "name": f"DEST: {st.session_state.dest_name}",
-            "type": "destination",
-        }
+    layers.append(
+        pdk.Layer(
+            "TextLayer",
+            data=wp_df,
+            get_position="[lon, lat]",
+            get_text="name",
+            get_size=13,
+            get_color="[20, 20, 20]",
+            get_alignment_baseline="'bottom'",
+        )
     )
-    df = pd.DataFrame(rows)
-    st.map(df, latitude="lat", longitude="lon", size=40)
+
+    # Center on the route with a span-based zoom.
+    lats = [p["lat"] for p in waypoints]
+    lngs = [p["lng"] for p in waypoints]
+    span = max(max(lats) - min(lats), max(lngs) - min(lngs))
+    zoom = 9.0 if span < 0.4 else 7.5 if span < 1.5 else 6.0 if span < 4 else 4.6
+    view = pdk.ViewState(
+        latitude=sum(lats) / len(lats),
+        longitude=sum(lngs) / len(lngs),
+        zoom=zoom,
+    )
+    st.pydeck_chart(
+        pdk.Deck(
+            layers=layers,
+            initial_view_state=view,
+            map_provider="carto",
+            map_style="light",
+            tooltip={"text": "{name}"},
+        )
+    )
 
 
 def main() -> None:
@@ -288,10 +482,6 @@ def main() -> None:
 
     col_left, col_right = st.columns([1.1, 1])
 
-    places = do_places()
-    place_names = [p["name"] for p in places]
-    place_by_name = {p["name"]: p for p in places}
-
     with col_left:
         st.subheader("1. Your goal")
         st.write(format_goal_prompt(st.session_state.user_id))
@@ -304,50 +494,74 @@ def main() -> None:
         goal_text = st.text_area("Goal statement", value=default_goal, height=100)
 
         st.subheader("2. Origin & destination")
+        st.caption("Type an address, or switch on coordinates to use a current location.")
         c1, c2 = st.columns(2)
         with c1:
-            o_choice = st.selectbox(
-                "Origin (India catalog)",
-                place_names,
-                index=place_names.index("Ahmedabad") if "Ahmedabad" in place_names else 0,
+            origin_addr = st.text_input(
+                "Origin address", value="Ahmedabad", placeholder="e.g. Rajkot, Gujarat"
             )
-            st.session_state.origin_name = o_choice
-            st.session_state.origin_lat = place_by_name[o_choice]["lat"]
-            st.session_state.origin_lng = place_by_name[o_choice]["lng"]
-            origin_manual = st.text_input("Or type origin", value="")
-            use_geo = st.checkbox("Use browser-like coords for origin (manual lat/lng)", False)
-            if use_geo:
-                st.session_state.origin_lat = st.number_input("Origin lat", value=23.0225, format="%.6f")
-                st.session_state.origin_lng = st.number_input("Origin lng", value=72.5714, format="%.6f")
-                if origin_manual:
-                    st.session_state.origin_name = origin_manual
+            use_origin_coords = st.checkbox("Use coordinates (current location)", key="oc")
+            origin_lat_in = origin_lng_in = None
+            if use_origin_coords:
+                origin_lat_in = st.number_input("Origin latitude", value=23.0225, format="%.6f")
+                origin_lng_in = st.number_input("Origin longitude", value=72.5714, format="%.6f")
         with c2:
-            d_default = "Jio Institute" if "Jio Institute" in place_names else place_names[0]
-            d_choice = st.selectbox(
-                "Destination (India catalog / map)",
-                place_names,
-                index=place_names.index(d_default),
+            dest_addr = st.text_input(
+                "Destination address", value="Jio Institute", placeholder="e.g. Mumbai Airport"
             )
-            st.session_state.dest_name = d_choice
-            st.session_state.dest_lat = place_by_name[d_choice]["lat"]
-            st.session_state.dest_lng = place_by_name[d_choice]["lng"]
-            dest_manual = st.text_input("Or type destination", value="")
-            if dest_manual.strip():
-                st.session_state.dest_name = dest_manual.strip()
+            use_dest_coords = st.checkbox("Use coordinates (current location)", key="dc")
+            dest_lat_in = dest_lng_in = None
+            if use_dest_coords:
+                dest_lat_in = st.number_input("Destination latitude", value=18.9800, format="%.6f")
+                dest_lng_in = st.number_input("Destination longitude", value=73.0300, format="%.6f")
 
-        st.subheader("India map pins")
-        render_map(places)
+        # Resolve display coordinates for the map (address → geocode, or coords).
+        if use_origin_coords and origin_lat_in is not None:
+            st.session_state.origin_lat = float(origin_lat_in)
+            st.session_state.origin_lng = float(origin_lng_in)
+            st.session_state.origin_name = origin_addr.strip() or "Current location"
+        elif origin_addr.strip():
+            st.session_state.origin_name = origin_addr.strip()
+            g = geocode_point(origin_addr.strip())
+            if g:
+                st.session_state.origin_lat, st.session_state.origin_lng = g
+        if use_dest_coords and dest_lat_in is not None:
+            st.session_state.dest_lat = float(dest_lat_in)
+            st.session_state.dest_lng = float(dest_lng_in)
+            st.session_state.dest_name = dest_addr.strip() or "Dropped pin"
+        elif dest_addr.strip():
+            st.session_state.dest_name = dest_addr.strip()
+            g = geocode_point(dest_addr.strip())
+            if g:
+                st.session_state.dest_lat, st.session_state.dest_lng = g
+
+        st.subheader("Route map")
+        # If a plan exists, trace the selected itinerary's legs; otherwise show
+        # the origin → destination road.
+        _plan = st.session_state.plan
+        if _plan and _plan.get("itineraries"):
+            _sel = st.session_state.selected_itin or _plan["itineraries"][0]["itinerary_id"]
+            _chosen = next(
+                (i for i in _plan["itineraries"] if i["itinerary_id"] == _sel),
+                _plan["itineraries"][0],
+            )
+            route = build_route(_chosen)
+            if route["waypoints"]:
+                st.caption("Route: " + " → ".join(p["name"] for p in route["waypoints"]))
+        else:
+            route = build_od_route()
+        render_map(route)
 
         if st.button("🚀 Plan my journey", type="primary", use_container_width=True):
-            origin = origin_manual.strip() or st.session_state.origin_name
-            dest = dest_manual.strip() or st.session_state.dest_name
             payload = {
                 "user_id": st.session_state.user_id,
                 "goal_text": goal_text,
-                "origin": origin,
-                "destination": dest,
-                "origin_lat": st.session_state.origin_lat if use_geo else None,
-                "origin_lng": st.session_state.origin_lng if use_geo else None,
+                "origin": origin_addr.strip() or st.session_state.origin_name,
+                "destination": dest_addr.strip() or st.session_state.dest_name,
+                "origin_lat": float(origin_lat_in) if use_origin_coords else None,
+                "origin_lng": float(origin_lng_in) if use_origin_coords else None,
+                "destination_lat": float(dest_lat_in) if use_dest_coords else None,
+                "destination_lng": float(dest_lng_in) if use_dest_coords else None,
                 "max_options": 3,
             }
             # Drop null coords for cleaner local validate

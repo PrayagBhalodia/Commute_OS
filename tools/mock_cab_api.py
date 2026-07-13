@@ -12,7 +12,7 @@ import uuid
 from typing import Any, Optional
 
 
-# Sample base fares in INR for common Indian corridors (demo defaults).
+# Known corridors keep curated fares so demo routes stay stable (INR).
 _BASE_FARES: dict[tuple[str, str], float] = {
     ("Ahmedabad", "Ahmedabad Airport"): 450.0,
     ("Ahmedabad Airport", "Ahmedabad"): 450.0,
@@ -22,6 +22,26 @@ _BASE_FARES: dict[tuple[str, str], float] = {
     ("Navi Mumbai", "Mumbai Airport"): 700.0,
     ("Delhi", "Bengaluru"): 0.0,  # not a cab corridor
 }
+
+# Distance-based fare model (used when a corridor isn't in the table above).
+_CAB_PICKUP_FARE = 50.0       # flat pickup / base
+_CAB_PER_KM_CITY = 15.0       # ≤ 100 km (city / short outstation)
+_CAB_PER_KM_LONG = 12.0       # > 100 km (outstation slab)
+_CAB_MIN_FARE = 80.0
+_CAB_FLAT_FALLBACK = 350.0    # legacy fallback when distance is unknown
+
+
+def _cab_base_fare(
+    origin: str, destination: str, distance_km: Optional[float]
+) -> float:
+    """Base cab fare before luggage: curated corridor → distance model → flat."""
+    table = _BASE_FARES.get((origin, destination))
+    if table is not None:
+        return table
+    if distance_km is not None and distance_km > 0:
+        per_km = _CAB_PER_KM_CITY if distance_km <= 100 else _CAB_PER_KM_LONG
+        return max(_CAB_MIN_FARE, _CAB_PICKUP_FARE + distance_km * per_km)
+    return _CAB_FLAT_FALLBACK
 
 
 def _stable_ref(prefix: str, seed: str) -> str:
@@ -49,17 +69,22 @@ def get_cab_quotes(
     destination: str,
     operator: str = "Ola",
     luggage_count: int = 0,
+    distance_km: Optional[float] = None,
     failure_rate: float = 0.05,
     latency_seconds: float = 0.05,
     force_failure: bool = False,
 ) -> list[dict[str, Any]]:
-    """Return mock cab quotes for origin → destination."""
+    """Return mock cab quotes for origin → destination.
+
+    When ``distance_km`` is supplied, the fare scales with distance instead of
+    using a flat fallback, so long corridors are priced realistically.
+    """
     _simulate_latency(latency_seconds)
     seed = f"quote-cab-{origin}-{destination}-{operator}"
     if _should_fail(force_failure, failure_rate, seed):
         return []
 
-    base = _BASE_FARES.get((origin, destination), 350.0)
+    base = _cab_base_fare(origin, destination, distance_km)
     luggage_surcharge = max(0, luggage_count) * 50.0
     amount = base + luggage_surcharge
     operators = [operator] if operator else ["Ola", "Uber"]

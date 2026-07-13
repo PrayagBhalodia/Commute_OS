@@ -2,18 +2,22 @@
 
 Parses natural-language mobility goals into structured GoalContext,
 loads learned user preferences, and records missing fields for HITL.
-Deterministic rule-based NLP (no LLM required). Optional hooks can later
-call an external LLM without changing the public contract.
+
+A deterministic rule-based parser always runs and is fully sufficient offline.
+When Gemini is configured (GEMINI_API_KEY), an optional LLM pass enriches the
+result — filling fields the rules missed and boosting confidence — without
+changing the public contract or removing the deterministic fallback.
 """
 
 from __future__ import annotations
 
 import re
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Any, Optional
 
 from agents.user_memory import UserMemoryStore
 from api.schemas import GoalContext, IntentResult, UserPreferences
+from tools.llm import gemini_enabled, generate_json
 
 
 class IntentAgent:
@@ -36,8 +40,13 @@ class IntentAgent:
         return_required: Optional[bool] = None,
         luggage_count: Optional[int] = None,
         required_buffer_minutes: Optional[int] = None,
+        use_llm: bool = True,
     ) -> IntentResult:
-        """Parse free-text goal into IntentResult + GoalContext."""
+        """Parse free-text goal into IntentResult + GoalContext.
+
+        The deterministic parser always runs. If ``use_llm`` is set and Gemini
+        is configured, an LLM pass fills any gaps the rules left open.
+        """
         prefs = self.memory.get_preferences(user_id)
         reasoning: list[str] = []
         raw = (text or "").strip()
@@ -244,6 +253,34 @@ class IntentAgent:
             prefs.prefer_low_emission = True
             reasoning.append("User signal: prefer low emission.")
 
+        # --- Optional LLM enrichment (fills gaps only; never overrides rules) ---
+        llm_used = False
+        if use_llm and raw and gemini_enabled():
+            llm = self._llm_extract(raw)
+            if llm:
+                llm_used = True
+                reasoning.append("Gemini enrichment applied to fill missing fields.")
+                if not dest and llm.get("destination"):
+                    dest = str(llm["destination"]).strip()
+                    reasoning.append(f"LLM destination: {dest}.")
+                if not origin and llm.get("origin"):
+                    origin = str(llm["origin"]).strip()
+                    reasoning.append(f"LLM origin: {origin}.")
+                if purpose == "general" and llm.get("purpose"):
+                    purpose = str(llm["purpose"]).strip().lower().replace(" ", "_")
+                    reasoning.append(f"LLM purpose: {purpose}.")
+                if return_required is None and isinstance(llm.get("return_required"), bool):
+                    ret = llm["return_required"]
+                    reasoning.append(f"LLM return_required: {ret}.")
+                if luggage_count is None and isinstance(llm.get("luggage_count"), int):
+                    luggage = llm["luggage_count"]
+                    reasoning.append(f"LLM luggage_count: {luggage}.")
+                if required_buffer_minutes is None and isinstance(
+                    llm.get("required_buffer_minutes"), int
+                ):
+                    buffer = llm["required_buffer_minutes"]
+                    reasoning.append(f"LLM buffer: {buffer} min.")
+
         goal = GoalContext(
             goal_statement=raw or f"Travel to {dest or 'destination'}",
             purpose=purpose,
@@ -255,7 +292,8 @@ class IntentAgent:
             required_buffer_minutes=int(buffer or 0),
             metadata={
                 "origin_hint": origin,
-                "parsed_by": "IntentAgent.v1",
+                "parsed_by": "IntentAgent.v1+gemini" if llm_used else "IntentAgent.v1",
+                "llm_used": llm_used,
             },
         )
 
@@ -272,7 +310,9 @@ class IntentAgent:
             confidence += 0.1
         if purpose != "general":
             confidence += 0.1
-        confidence = min(0.95, confidence)
+        if llm_used:
+            confidence += 0.05
+        confidence = min(0.97, confidence)
 
         self.memory.record_event(
             user_id,
@@ -298,3 +338,33 @@ class IntentAgent:
             reasoning=reasoning,
             missing_fields=missing,
         )
+
+    # ------------------------------------------------------------------
+    # Optional LLM enrichment
+    # ------------------------------------------------------------------
+
+    def _llm_extract(self, text: str) -> Optional[dict[str, Any]]:
+        """Ask Gemini to extract structured mobility fields as JSON.
+
+        Returns ``None`` on any failure so the deterministic parse stands alone.
+        """
+        system = (
+            "You extract structured travel intent from a user's message about "
+            "commuting within India. Reply with a single JSON object only."
+        )
+        prompt = (
+            "Extract these fields from the message (use null when unknown):\n"
+            "  origin: string | null (starting place)\n"
+            "  destination: string | null (where they need to go)\n"
+            "  purpose: one of [interview, meeting, flight_catch, tourism, "
+            "medical, education, commute, general] | null\n"
+            "  return_required: boolean | null (do they need a return trip)\n"
+            "  luggage_count: integer | null (number of bags/suitcases)\n"
+            "  required_buffer_minutes: integer | null (how early they must "
+            "arrive, in minutes)\n\n"
+            f"Message: {text!r}\n"
+            'Respond with JSON like {"origin": ..., "destination": ..., '
+            '"purpose": ..., "return_required": ..., "luggage_count": ..., '
+            '"required_buffer_minutes": ...}.'
+        )
+        return generate_json(prompt, system=system, temperature=0.1)

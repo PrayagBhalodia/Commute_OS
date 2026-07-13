@@ -43,6 +43,28 @@ _MODE_PREFIX = {
     "auto": "ATO",
 }
 
+# Per-mode distance fare model: (base_fare, per_km, min_fare) in INR.
+# Used when a corridor isn't in the curated table above.
+_MODE_RATES: dict[str, tuple[float, float, float]] = {
+    "train": (120.0, 1.0, 150.0),   # AC chair / sleeper blend
+    "bus": (80.0, 1.6, 100.0),      # intercity coach
+    "metro": (10.0, 0.6, 15.0),     # short urban hops
+    "auto": (30.0, 12.0, 40.0),     # last-mile auto-rickshaw
+}
+
+
+def _transit_base_fare(
+    mode_key: str, origin: str, destination: str, distance_km: Optional[float]
+) -> float:
+    """Fare: curated corridor → per-mode distance model → flat fallback."""
+    table = _BASE_FARES.get(mode_key, {}).get((origin, destination))
+    if table is not None:
+        return table
+    if distance_km is not None and distance_km > 0:
+        base_c, per_km, min_c = _MODE_RATES.get(mode_key, (120.0, 1.0, 100.0))
+        return max(min_c, base_c + distance_km * per_km)
+    return 40.0 if mode_key == "metro" else 200.0
+
 
 def _stable_ref(prefix: str, seed: str) -> str:
     digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()[:6].upper()
@@ -74,19 +96,22 @@ def get_transit_quotes(
     destination: str,
     mode: str | TransportMode = "train",
     operator: str = "IRCTC",
+    distance_km: Optional[float] = None,
     failure_rate: float = 0.05,
     latency_seconds: float = 0.05,
     force_failure: bool = False,
 ) -> list[dict[str, Any]]:
-    """Return mock transit quotes for the given mode."""
+    """Return mock transit quotes for the given mode.
+
+    When ``distance_km`` is supplied, the fare scales per-mode with distance.
+    """
     mode_key = _normalize_mode(mode)
     _simulate_latency(latency_seconds)
     seed = f"quote-trn-{mode_key}-{origin}-{destination}-{operator}"
     if _should_fail(force_failure, failure_rate, seed):
         return []
 
-    mode_fares = _BASE_FARES.get(mode_key, {})
-    base = mode_fares.get((origin, destination), 200.0 if mode_key != "metro" else 40.0)
+    base = _transit_base_fare(mode_key, origin, destination, distance_km)
     return [
         {
             "success": True,

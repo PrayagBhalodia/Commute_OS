@@ -20,6 +20,7 @@ from api.schemas import (
     UserPreferences,
 )
 from tools import mock_cab_api, mock_flight_api, mock_transit_api
+from tools.llm import gemini_enabled, generate_text
 from tools.maps_api import directions_summary, distance_matrix, resolve_origin_destination
 from tools.places_india import nearest_airport
 
@@ -61,6 +62,7 @@ class JourneyCompositionAgent:
         destination_lat: Optional[float] = None,
         destination_lng: Optional[float] = None,
         max_options: int = 3,
+        use_llm: bool = True,
     ) -> tuple[PlaceInfo, PlaceInfo, float, list[ItineraryOption], list[str]]:
         """Return origin, destination, distance_km, ranked itineraries, reasoning."""
         reasoning: list[str] = []
@@ -166,6 +168,15 @@ class JourneyCompositionAgent:
             "Ranked itineraries by preference-weighted score: "
             + ", ".join(f"{s.itinerary_id}={s.score:.2f}" for s in scored)
         )
+
+        # Optional: let Gemini phrase a recommendation for the top option.
+        if use_llm and scored and gemini_enabled():
+            rec = self._llm_recommend(goal, preferences, scored)
+            if rec:
+                scored[0].explanation = rec
+                scored[0].metadata = {**scored[0].metadata, "llm_recommended": True}
+                reasoning.append("Gemini refined the top itinerary's explanation.")
+
         return o, d, dist_km, scored, reasoning
 
     # ------------------------------------------------------------------
@@ -187,6 +198,7 @@ class JourneyCompositionAgent:
         duration = max(20.0, float(dm["duration_minutes"]))
         quotes = mock_cab_api.get_cab_quotes(
             o.name, d.name, operator="Ola", luggage_count=goal.luggage_count,
+            distance_km=dm["distance_km"],
             failure_rate=0.0, latency_seconds=0.0,
         )
         price = quotes[0]["amount"] if quotes else max(150.0, dm["distance_km"] * 18)
@@ -242,7 +254,8 @@ class JourneyCompositionAgent:
         # Leg times working backwards from arrive_by
         dm_last = distance_matrix(d_apt, destination, mode="driving")
         cab2_min = max(25.0, float(dm_last["duration_minutes"]))
-        flight_min = 95.0 if distance_matrix(o_apt, d_apt)["distance_km"] < 900 else 150.0
+        flt_dist = distance_matrix(o_apt, d_apt)["distance_km"]
+        flight_min = 95.0 if flt_dist < 900 else 150.0
         dm_first = distance_matrix(origin, o_apt, mode="driving")
         cab1_min = max(25.0, float(dm_first["duration_minutes"]))
 
@@ -255,14 +268,17 @@ class JourneyCompositionAgent:
 
         q1 = mock_cab_api.get_cab_quotes(
             o.name, o_apt["name"], operator=cab_operator, luggage_count=luggage,
+            distance_km=dm_first["distance_km"],
             failure_rate=0.0, latency_seconds=0.0,
         )
         qf = mock_flight_api.get_flight_quotes(
             o_apt["name"], d_apt["name"], operator=operator,
+            distance_km=flt_dist,
             failure_rate=0.0, latency_seconds=0.0,
         )
         q2 = mock_cab_api.get_cab_quotes(
             d_apt["name"], d.name, operator=cab_operator, luggage_count=luggage,
+            distance_km=dm_last["distance_km"],
             failure_rate=0.0, latency_seconds=0.0,
         )
         p1 = q1[0]["amount"] if q1 else 450.0
@@ -295,7 +311,7 @@ class JourneyCompositionAgent:
                 arrival=arr_flight,
                 price=round(pf, 2),
                 comfort_score=0.9 if operator == "Air India" else 0.8,
-                emission_kg=round(distance_matrix(o_apt, d_apt)["distance_km"] * 0.15, 2),
+                emission_kg=round(flt_dist * 0.15, 2),
                 service_id=f"FLT-{operator[:3].upper()}",
                 metadata={},
             ),
@@ -358,6 +374,7 @@ class JourneyCompositionAgent:
 
         tq = mock_transit_api.get_transit_quotes(
             o.city or o.name, d.city or d.name, mode="train", operator="IRCTC",
+            distance_km=dist,
             failure_rate=0.0, latency_seconds=0.0,
         )
         train_price = tq[0]["amount"] if tq else max(400.0, dist * 1.2)
@@ -513,6 +530,42 @@ class JourneyCompositionAgent:
             },
         }
         return opt
+
+    # ------------------------------------------------------------------
+    # Optional LLM narration
+    # ------------------------------------------------------------------
+
+    def _llm_recommend(
+        self,
+        goal: GoalContext,
+        prefs: UserPreferences,
+        scored: list[ItineraryOption],
+    ) -> Optional[str]:
+        """One-sentence recommendation for the top itinerary, or None."""
+        top = scored[0]
+        modes = " → ".join(lg.mode.value for lg in top.legs)
+        prefs_summary = ", ".join(
+            label
+            for flag, label in (
+                (prefs.prefer_cheapest, "cheapest"),
+                (prefs.prefer_fastest, "fastest"),
+                (prefs.prefer_comfort, "comfort"),
+                (prefs.prefer_low_emission, "low-emission"),
+            )
+            if flag
+        ) or "balanced"
+        prompt = (
+            "You are a mobility assistant. In ONE concise sentence (<= 30 words), "
+            "explain why this itinerary suits the traveller. Plain text only.\n\n"
+            f"Goal: {goal.goal_statement}\n"
+            f"Purpose: {goal.purpose}\n"
+            f"Traveller preference: {prefs_summary}\n"
+            f"Recommended route: {modes}, "
+            f"total ₹{top.total_price:.0f}, "
+            f"{top.total_duration_minutes:.0f} min, "
+            f"~{(top.total_emission_kg or 0):.0f} kg CO2."
+        )
+        return generate_text(prompt, temperature=0.4)
 
 
 def buffer_msg(goal: GoalContext) -> str:

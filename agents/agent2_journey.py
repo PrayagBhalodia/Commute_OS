@@ -45,6 +45,31 @@ def _place_info(d: dict[str, Any]) -> PlaceInfo:
     )
 
 
+def _latlng(point: Any) -> Optional[tuple[float, float]]:
+    """Best-effort (lat, lng) from a PlaceInfo or a place dict."""
+    if point is None:
+        return None
+    if isinstance(point, dict):
+        if point.get("lat") is None or point.get("lng") is None:
+            return None
+        return float(point["lat"]), float(point["lng"])
+    lat, lng = getattr(point, "lat", None), getattr(point, "lng", None)
+    if lat is None or lng is None:
+        return None
+    return float(lat), float(lng)
+
+
+def _geo(frm: Any, to: Any) -> dict[str, float]:
+    """Leg endpoint coordinates for map rendering. Missing points are omitted."""
+    meta: dict[str, float] = {}
+    a, b = _latlng(frm), _latlng(to)
+    if a:
+        meta["from_lat"], meta["from_lng"] = a
+    if b:
+        meta["to_lat"], meta["to_lng"] = b
+    return meta
+
+
 class JourneyCompositionAgent:
     """Compose and score end-to-end multi-modal itineraries."""
 
@@ -215,7 +240,7 @@ class JourneyCompositionAgent:
             comfort_score=0.65,
             emission_kg=round(dm["distance_km"] * 0.12, 2),
             service_id="CAB-SVC-OLA",
-            metadata={"duration_min": duration},
+            metadata={"duration_min": duration, **_geo(o, d)},
         )
         return ItineraryOption(
             itinerary_id=f"itin-cab-{tag}-{uuid.uuid4().hex[:6]}",
@@ -299,7 +324,7 @@ class JourneyCompositionAgent:
                 price=round(p1, 2),
                 comfort_score=0.7 if cab_operator == "Uber" else 0.65,
                 emission_kg=round(dm_first["distance_km"] * 0.12, 2),
-                metadata={},
+                metadata=_geo(o, o_apt),
             ),
             LegOption(
                 leg_id=f"leg-2-flt-{tag}-{uuid.uuid4().hex[:4]}",
@@ -313,7 +338,7 @@ class JourneyCompositionAgent:
                 comfort_score=0.9 if operator == "Air India" else 0.8,
                 emission_kg=round(flt_dist * 0.15, 2),
                 service_id=f"FLT-{operator[:3].upper()}",
-                metadata={},
+                metadata=_geo(o_apt, d_apt),
             ),
             LegOption(
                 leg_id=f"leg-3-cab-{tag}-{uuid.uuid4().hex[:4]}",
@@ -326,7 +351,7 @@ class JourneyCompositionAgent:
                 price=round(p2, 2),
                 comfort_score=0.75,
                 emission_kg=round(dm_last["distance_km"] * 0.12, 2),
-                metadata={},
+                metadata=_geo(d_apt, d),
             ),
         ]
         total_price = sum(lg.price for lg in legs)
@@ -392,7 +417,7 @@ class JourneyCompositionAgent:
                 price=cab_price,
                 comfort_score=0.6,
                 emission_kg=4.0,
-                metadata={},
+                metadata=_geo(o, o),
             ),
             LegOption(
                 leg_id=f"leg-t2-{uuid.uuid4().hex[:4]}",
@@ -405,7 +430,7 @@ class JourneyCompositionAgent:
                 price=round(train_price, 2),
                 comfort_score=0.55,
                 emission_kg=round(dist * 0.04, 2),
-                metadata={},
+                metadata=_geo(o, d),
             ),
             LegOption(
                 leg_id=f"leg-t3-{uuid.uuid4().hex[:4]}",
@@ -418,7 +443,7 @@ class JourneyCompositionAgent:
                 price=cab_price,
                 comfort_score=0.6,
                 emission_kg=4.0,
-                metadata={},
+                metadata=_geo(d, d),
             ),
         ]
         total_price = sum(lg.price for lg in legs)
@@ -453,6 +478,17 @@ class JourneyCompositionAgent:
         t = return_start
         for i, leg in enumerate(reversed(opt.legs)):
             dur = (leg.arrival - leg.departure).total_seconds() / 60.0
+            # Reverse the leg, so swap its endpoint coordinates for the map too.
+            reversed_geo = {
+                k: v
+                for k, v in {
+                    "from_lat": leg.metadata.get("to_lat"),
+                    "from_lng": leg.metadata.get("to_lng"),
+                    "to_lat": leg.metadata.get("from_lat"),
+                    "to_lng": leg.metadata.get("from_lng"),
+                }.items()
+                if v is not None
+            }
             new_leg = LegOption(
                 leg_id=f"ret-{i+1}-{uuid.uuid4().hex[:4]}",
                 mode=leg.mode,
@@ -464,7 +500,7 @@ class JourneyCompositionAgent:
                 price=round(leg.price * 0.98, 2),
                 comfort_score=leg.comfort_score,
                 emission_kg=leg.emission_kg,
-                metadata={"direction": "return"},
+                metadata={"direction": "return", **reversed_geo},
             )
             ret_legs.append(new_leg)
             t = new_leg.arrival + timedelta(minutes=25)

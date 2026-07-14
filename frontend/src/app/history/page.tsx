@@ -2,43 +2,93 @@
 
 import Link from "next/link";
 import { useMemo, useState } from "react";
+import { ArrowRight, ChevronDown } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { EmptyState } from "@/components/shared/Status";
 import { cn } from "@/lib/utils";
-import { useJourneyStore } from "@/store/journey-store";
+import { journeyEndpoints, journeySegments, type JourneySegment } from "@/lib/segments";
+import type { ItineraryOption } from "@/models/journey";
+import { getSelectedItinerary, useJourneyStore } from "@/store/journey-store";
 
 // The status filters, plus an "All" that shows everything.
-const TABS = ["All", "Completed", "Cancelled", "Replanned", "Refunded"] as const;
+const TABS = ["All", "Completed", "Cancelled"] as const;
 type Tab = (typeof TABS)[number];
 
 interface TripRow {
   trip: string;
   label: string;
   status: string;
-  // Which filter tabs this trip belongs to (a cancelled trip is both
-  // "Cancelled" and "Refunded", etc.).
+  itinerary?: ItineraryOption;
+  // Which filter tabs this trip belongs to.
   categories: Exclude<Tab, "All">[];
 }
 
-/** Map a raw booking/disruption status into the filter categories it satisfies. */
+/** Map a raw booking status into the filter categories it satisfies. */
 function bookingCategories(status: string): Exclude<Tab, "All">[] {
-  if (status === "cancelled") return ["Cancelled", "Refunded"];
-  if (status === "partially_cancelled") return ["Completed", "Cancelled", "Refunded"];
+  if (status === "cancelled") return ["Cancelled"];
+  if (status === "partially_cancelled") return ["Completed", "Cancelled"];
   if (status === "confirmed") return ["Completed"];
   return [];
 }
 
-function disruptionCategories(status: string): Exclude<Tab, "All">[] {
-  if (status === "cancelled_only") return ["Replanned", "Cancelled", "Refunded"];
-  if (status === "rerouted") return ["Replanned", "Refunded"];
-  return ["Replanned"];
+/** Expandable trip card: collapsed shows Initial → Final, expanded lists segments. */
+function TripCard({ row }: { row: TripRow }) {
+  const [open, setOpen] = useState(false);
+  const { initial, final } = journeyEndpoints(row.itinerary);
+  const segments: JourneySegment[] = journeySegments(row.itinerary);
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <CardTitle>{row.label}</CardTitle>
+          <Badge tone={row.status === "cancelled" ? "red" : row.status.includes("confirm") ? "green" : "amber"}>
+            {row.status}
+          </Badge>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-3 text-sm">
+        <div className="flex flex-wrap items-center gap-2 font-medium text-slate-900">
+          <span>{initial}</span>
+          <ArrowRight className="h-4 w-4 text-slate-400" />
+          <span>{final}</span>
+        </div>
+        {segments.length ? (
+          <button
+            type="button"
+            aria-expanded={open}
+            onClick={() => setOpen((v) => !v)}
+            className="inline-flex items-center gap-1.5 rounded-md border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-600 transition-colors hover:bg-slate-50"
+          >
+            {open ? "Hide breakdown" : "View full breakdown"}
+            <ChevronDown className={cn("h-4 w-4 transition-transform", open && "rotate-180")} />
+          </button>
+        ) : null}
+        {open ? (
+          <ol className="space-y-2 border-l border-slate-200 pl-4">
+            {segments.map((segment, index) => (
+              <li key={segment.leg_id} className="flex flex-wrap items-center gap-2 text-slate-700">
+                <span className="text-xs text-slate-400">Segment {index + 1}</span>
+                <span className="font-medium">{segment.from}</span>
+                <ArrowRight className="h-3.5 w-3.5 text-slate-400" />
+                <span className="font-medium">{segment.to}</span>
+              </li>
+            ))}
+          </ol>
+        ) : null}
+        <div className="pt-1 text-xs text-slate-400">{row.trip}</div>
+      </CardContent>
+    </Card>
+  );
 }
 
 export default function HistoryPage() {
   const plan = useJourneyStore((state) => state.activePlan);
+  const selectedId = useJourneyStore((state) => state.selectedItineraryId);
+  const returnPlan = useJourneyStore((state) => state.returnPlan);
+  const selectedReturnId = useJourneyStore((state) => state.selectedReturnItineraryId);
   const booking = useJourneyStore((state) => state.booking?.booking);
-  const disruption = useJourneyStore((state) => state.disruption);
   const [activeTab, setActiveTab] = useState<Tab>("All");
 
   const rows = useMemo<TripRow[]>(() => {
@@ -48,19 +98,22 @@ export default function HistoryPage() {
         trip: booking.trip_id,
         label: booking.status === "cancelled" ? "Cancelled journey" : "Booked journey",
         status: booking.status,
+        itinerary: getSelectedItinerary(plan, selectedId),
         categories: bookingCategories(booking.status),
       });
-    }
-    if (disruption) {
-      list.push({
-        trip: disruption.trip_id,
-        label: "Replanned disruption",
-        status: disruption.status,
-        categories: disruptionCategories(disruption.status),
-      });
+      const returnItinerary = getSelectedItinerary(returnPlan, selectedReturnId);
+      if (returnItinerary) {
+        list.push({
+          trip: `${booking.trip_id} · return`,
+          label: "Return journey",
+          status: booking.status,
+          itinerary: returnItinerary,
+          categories: bookingCategories(booking.status),
+        });
+      }
     }
     return list;
-  }, [booking, disruption]);
+  }, [booking, plan, selectedId, returnPlan, selectedReturnId]);
 
   const visibleRows = useMemo(
     () => (activeTab === "All" ? rows : rows.filter((row) => row.categories.includes(activeTab))),
@@ -69,7 +122,7 @@ export default function HistoryPage() {
 
   // Per-tab counts so the tabs communicate what's behind them.
   const counts = useMemo(() => {
-    const map: Record<Tab, number> = { All: rows.length, Completed: 0, Cancelled: 0, Replanned: 0, Refunded: 0 };
+    const map: Record<Tab, number> = { All: rows.length, Completed: 0, Cancelled: 0 };
     for (const row of rows) for (const category of row.categories) map[category] += 1;
     return map;
   }, [rows]);
@@ -78,7 +131,7 @@ export default function HistoryPage() {
     <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-semibold">Past and simulated journeys</h1>
-        <p className="text-sm text-slate-500">Filter by state: completed, cancelled, replanned, refunded.</p>
+        <p className="text-sm text-slate-500">Filter by state and expand any trip to see its full segment breakdown.</p>
       </div>
 
       {/* Functional status tabs */}
@@ -111,13 +164,7 @@ export default function HistoryPage() {
       {visibleRows.length ? (
         <div className="grid gap-4">
           {visibleRows.map((row) => (
-            <Card key={`${row.trip}-${row.label}`}>
-              <CardHeader><CardTitle>{row.label}</CardTitle></CardHeader>
-              <CardContent className="flex flex-wrap items-center justify-between gap-3 text-sm">
-                <span>{row.trip}</span>
-                <Badge tone={row.status === "cancelled" ? "red" : row.status.includes("confirm") ? "green" : "amber"}>{row.status}</Badge>
-              </CardContent>
-            </Card>
+            <TripCard key={`${row.trip}-${row.label}`} row={row} />
           ))}
         </div>
       ) : (
@@ -125,8 +172,8 @@ export default function HistoryPage() {
           title={activeTab === "All" ? "No history yet" : `No ${activeTab.toLowerCase()} trips`}
           message={
             activeTab === "All"
-              ? "Confirmed bookings and demo disruptions will appear here during this browser session."
-              : "Switch tabs or take an action (book, cancel, or replan) to populate this view."
+              ? "Confirmed bookings will appear here during this browser session."
+              : "Switch tabs or book a trip to populate this view."
           }
         />
       )}

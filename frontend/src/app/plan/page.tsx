@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useForm } from "react-hook-form";
 import { toast } from "sonner";
-import { ArrowRight, Armchair, IndianRupee, Leaf, RotateCcw, Zap } from "lucide-react";
+import { ArrowRight, Armchair, IndianRupee, RotateCcw, Zap } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input, Textarea } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -25,7 +25,6 @@ import { getSelectedItinerary, useJourneyStore } from "@/store/journey-store";
 const PRIORITIES: { key: TripPriority; icon: typeof Zap; activeClass: string }[] = [
   { key: "time", icon: Zap, activeClass: "border-sky-500 bg-sky-50 text-sky-700" },
   { key: "cost", icon: IndianRupee, activeClass: "border-amber-500 bg-amber-50 text-amber-700" },
-  { key: "eco", icon: Leaf, activeClass: "border-emerald-500 bg-emerald-50 text-emerald-700" },
   { key: "comfort", icon: Armchair, activeClass: "border-violet-500 bg-violet-50 text-violet-700" },
 ];
 
@@ -38,10 +37,12 @@ type ModalMode = "start" | "return";
 type ModalIntent = "plan" | "capture";
 
 export default function PlanPage() {
-  const { planMutation } = useJourneyController();
+  const { planMutation, returnPlanMutation } = useJourneyController();
   const plan = useJourneyStore((state) => state.activePlan);
   const selectedId = useJourneyStore((state) => state.selectedItineraryId);
   const selectItinerary = useJourneyStore((state) => state.selectItinerary);
+  const returnPlan = useJourneyStore((state) => state.returnPlan);
+  const clearReturnPlan = useJourneyStore((state) => state.clearReturnPlan);
   const trace = useJourneyStore((state) => state.trace);
   const goalText = useJourneyStore((state) => state.goalText);
   const priority = useJourneyStore((state) => state.priority);
@@ -82,6 +83,9 @@ export default function PlanPage() {
   }, [priority, plan?.trip_id]);
 
   // Fire the plan request, mapping form + schedule + priority into the payload.
+  // When a round trip is requested, chain a second plan for the return leg
+  // (origin/destination swapped, scheduled for the return date) so the Review
+  // tab can reflect both journeys.
   const doPlan = useCallback(
     (overrides?: Partial<PlanRequest>, priorityArg?: TripPriority) => {
       const values = { ...form.getValues(), ...overrides };
@@ -90,11 +94,36 @@ export default function PlanPage() {
         toast.error(parsed.error.issues[0]?.message ?? "Please describe your journey.");
         return;
       }
-      const metadata: Record<string, unknown> = { priority: priorityArg ?? priority };
+      const activePriority = priorityArg ?? priority;
+      const metadata: Record<string, unknown> = { priority: activePriority };
       if (returnDateTime) metadata.return_time = returnDateTime;
-      planMutation.mutate({ ...parsed.data, metadata });
+      const wantsReturn = Boolean(values.return_required) && Boolean(returnDateTime);
+
+      planMutation.mutate(
+        { ...parsed.data, metadata },
+        {
+          onSuccess: (onward) => {
+            if (!wantsReturn) {
+              clearReturnPlan();
+              return;
+            }
+            // Build a return goal from the resolved endpoints, swapped.
+            const returnGoal = `Return trip from ${onward.destination.name} to ${onward.origin.name} on ${returnDateTime}`;
+            returnPlanMutation.mutate({
+              user_id: parsed.data.user_id,
+              goal_text: returnGoal,
+              origin: onward.destination.name,
+              destination: onward.origin.name,
+              appointment_time: returnDateTime,
+              return_required: false,
+              max_options: parsed.data.max_options,
+              metadata: { priority: activePriority, leg: "return" },
+            });
+          },
+        },
+      );
     },
-    [form, priority, returnDateTime, planMutation],
+    [form, priority, returnDateTime, planMutation, returnPlanMutation, clearReturnPlan],
   );
 
   // Plan Trip: if we can't find a start time in the description (and none was
@@ -126,6 +155,7 @@ export default function PlanPage() {
       setModalOpen(true);
     } else {
       setSchedule({ startDateTime, returnDateTime: undefined });
+      clearReturnPlan();
     }
   };
 
@@ -167,9 +197,8 @@ export default function PlanPage() {
                   {...form.register("goal_text")}
                 />
               </label>
-              <div className="grid gap-3 sm:grid-cols-3">
+              <div className="grid gap-3 sm:grid-cols-2">
                 <label className="block text-sm font-medium">Passengers<Input className="mt-2" type="number" min={1} defaultValue={1} /></label>
-                <label className="block text-sm font-medium">Luggage<Input className="mt-2" type="number" min={0} {...form.register("luggage_count", { valueAsNumber: true })} /></label>
                 <label className="block text-sm font-medium">Max options<Input className="mt-2" type="number" min={2} max={5} {...form.register("max_options", { valueAsNumber: true })} /></label>
               </div>
               <label className="flex items-center gap-2 text-sm">
@@ -185,7 +214,7 @@ export default function PlanPage() {
               {/* Priority selector — switching one triggers a replan. */}
               <div>
                 <p className="mb-2 text-sm font-medium text-slate-700">Optimize for</p>
-                <div className="grid grid-cols-4 gap-2" role="group" aria-label="Trip priority">
+                <div className="grid grid-cols-3 gap-2" role="group" aria-label="Trip priority">
                   {PRIORITIES.map((p) => {
                     const Icon = p.icon;
                     const active = priority === p.key;
@@ -230,12 +259,17 @@ export default function PlanPage() {
                 <p className="text-sm text-slate-500">
                   {ranked.length} options · optimized for {PRIORITY_LABELS[priority].toLowerCase()} · {plan.message}
                 </p>
+                {returnPlan ? (
+                  <p className="mt-1 text-sm font-medium text-emerald-700">
+                    Return journey planned: {returnPlan.origin.name} to {returnPlan.destination.name}
+                    {returnDateTime ? ` · ${new Date(returnDateTime).toLocaleString()}` : null}
+                  </p>
+                ) : returnPlanMutation.isPending ? (
+                  <p className="mt-1 text-sm text-slate-500">Planning return journey…</p>
+                ) : null}
               </div>
               {selected ? (
                 <div className="flex gap-2">
-                  <Link href={`/journey/${plan.trip_id}`} className="inline-flex h-10 items-center gap-2 rounded-md border border-slate-200 bg-white px-4 text-sm font-medium">
-                    Details <ArrowRight className="h-4 w-4" />
-                  </Link>
                   <Link href={`/booking/${plan.trip_id}`} className="inline-flex h-10 items-center gap-2 rounded-md bg-slate-900 px-4 text-sm font-medium text-white">
                     Review booking <ArrowRight className="h-4 w-4" />
                   </Link>

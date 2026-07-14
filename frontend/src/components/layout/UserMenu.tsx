@@ -10,6 +10,7 @@ import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { usePreferencesController } from "@/controllers/journey-controller";
 import { DEMO_USER_ID } from "@/constants/demo";
+import { PRIORITY_LABELS, TRIP_PRIORITIES, type TripPriority } from "@/lib/priority";
 import type { UserPreferences } from "@/models/preferences";
 import {
   changePassword,
@@ -22,7 +23,6 @@ import { updatePreferences } from "@/services/preferences-service";
 import { useJourneyStore } from "@/store/journey-store";
 
 const MODE_OPTIONS = ["cab", "auto", "metro", "bus", "train", "flight"] as const;
-type JourneyStyle = "fastest" | "cheapest" | "balanced";
 
 export function UserMenu({ openUp = false }: { openUp?: boolean } = {}) {
   const [user, setUser] = useState<AuthUser | null>(null);
@@ -144,22 +144,18 @@ export function UserMenu({ openUp = false }: { openUp?: boolean } = {}) {
 function PreferencesTab({ userId }: { userId: string }) {
   const prefsQuery = usePreferencesController(userId);
   const queryClient = useQueryClient();
-  const [style, setStyle] = useState<JourneyStyle>("fastest");
+  // Journey style is the shared optimisation lens (Time / Cost / Comfort) that
+  // also drives the Plan page — both read and write the same store value.
+  const priority = useJourneyStore((state) => state.priority);
+  const setPriority = useJourneyStore((state) => state.setPriority);
   const [modes, setModes] = useState<string[]>([]);
-  const [buffer, setBuffer] = useState(45);
-  const [luggage, setLuggage] = useState(0);
-  const [comfort, setComfort] = useState(false);
   const loadedFor = useRef<string | null>(null);
 
   useEffect(() => {
     const data = prefsQuery.data;
     if (!data || loadedFor.current === data.user_id) return;
     loadedFor.current = data.user_id;
-    setStyle(data.prefer_fastest ? "fastest" : data.prefer_cheapest ? "cheapest" : "balanced");
     setModes(data.preferred_modes ?? []);
-    setBuffer(data.default_buffer_minutes ?? 45);
-    setLuggage(data.luggage_default ?? 0);
-    setComfort(Boolean(data.prefer_comfort));
   }, [prefsQuery.data]);
 
   const saveMutation = useMutation({
@@ -181,15 +177,14 @@ function PreferencesTab({ userId }: { userId: string }) {
 
   function save() {
     const base = prefsQuery.data ?? ({ user_id: userId } as UserPreferences);
+    // Map the shared journey-style lens onto the backend preference flags.
     saveMutation.mutate({
       ...base,
       user_id: userId,
-      prefer_fastest: style === "fastest",
-      prefer_cheapest: style === "cheapest",
+      prefer_fastest: priority === "time",
+      prefer_cheapest: priority === "cost",
+      prefer_comfort: priority === "comfort",
       preferred_modes: modes,
-      default_buffer_minutes: buffer,
-      luggage_default: luggage,
-      prefer_comfort: comfort,
     });
   }
 
@@ -197,18 +192,20 @@ function PreferencesTab({ userId }: { userId: string }) {
     <div className="space-y-4 text-sm">
       <fieldset>
         <legend className="mb-1.5 font-medium text-slate-700">Journey style</legend>
-        <div className="grid grid-cols-3 gap-1 rounded-md bg-slate-100 p-1">
-          {(["fastest", "cheapest", "balanced"] as const).map((option) => (
+        <div className="grid grid-cols-3 gap-1 rounded-md bg-slate-100 p-1" role="group" aria-label="Journey style">
+          {TRIP_PRIORITIES.map((option: TripPriority) => (
             <button
               key={option}
               type="button"
-              className={cn("focus-ring rounded px-2 py-1.5 capitalize", style === option ? "bg-white font-medium text-slate-950 shadow-sm" : "text-slate-600")}
-              onClick={() => setStyle(option)}
+              aria-pressed={priority === option}
+              className={cn("focus-ring rounded px-2 py-1.5", priority === option ? "bg-white font-medium text-slate-950 shadow-sm" : "text-slate-600")}
+              onClick={() => setPriority(option)}
             >
-              {option}
+              {PRIORITY_LABELS[option]}
             </button>
           ))}
         </div>
+        <p className="mt-1.5 text-xs text-slate-400">Kept in sync with the Plan page.</p>
       </fieldset>
 
       <fieldset>
@@ -227,24 +224,6 @@ function PreferencesTab({ userId }: { userId: string }) {
           ))}
         </div>
       </fieldset>
-
-      <div className="grid grid-cols-2 gap-3">
-        <label className="block space-y-1">
-          <span className="font-medium text-slate-700">Buffer (minutes)</span>
-          <Input type="number" min={0} max={240} value={buffer} onChange={(e) => setBuffer(Number(e.target.value))} />
-        </label>
-        <label className="block space-y-1">
-          <span className="font-medium text-slate-700">Default bags</span>
-          <Input type="number" min={0} max={10} value={luggage} onChange={(e) => setLuggage(Number(e.target.value))} />
-        </label>
-      </div>
-
-      <div className="space-y-2">
-        <label className="flex cursor-pointer items-center gap-2">
-          <input type="checkbox" className="accent-slate-900" checked={comfort} onChange={(e) => setComfort(e.target.checked)} />
-          Prefer extra comfort
-        </label>
-      </div>
 
       <Button size="sm" className="w-full" disabled={saveMutation.isPending} onClick={save}>
         {saveMutation.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}

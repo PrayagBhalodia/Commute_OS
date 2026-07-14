@@ -22,8 +22,11 @@ export default function BookingPage() {
   const userId = useJourneyStore((state) => state.userId);
   const plan = useJourneyStore((state) => state.activePlan);
   const selectedId = useJourneyStore((state) => state.selectedItineraryId);
+  const returnPlan = useJourneyStore((state) => state.returnPlan);
+  const selectedReturnId = useJourneyStore((state) => state.selectedReturnItineraryId);
   const booking = useJourneyStore((state) => state.booking);
   const itinerary = getSelectedItinerary(plan, selectedId);
+  const returnItinerary = getSelectedItinerary(returnPlan, selectedReturnId);
   const wallet = useWalletController(userId);
   const confirm = useBookingController();
 
@@ -53,9 +56,22 @@ export default function BookingPage() {
           <p className="text-sm text-slate-500">No booking request is sent until you explicitly consent.</p>
         </div>
         <Card>
-          <CardHeader><CardTitle>Selected itinerary</CardTitle></CardHeader>
+          <CardHeader>
+            <CardTitle>{returnItinerary ? "Onward journey" : "Selected itinerary"}</CardTitle>
+          </CardHeader>
           <CardContent><JourneyTimeline itinerary={itinerary} booking={booking?.booking} /></CardContent>
         </Card>
+        {returnItinerary ? (
+          <Card>
+            <CardHeader>
+              <CardTitle>Return journey</CardTitle>
+              <p className="mt-1 text-sm text-slate-500">
+                {returnPlan?.origin.name} to {returnPlan?.destination.name}
+              </p>
+            </CardHeader>
+            <CardContent><JourneyTimeline itinerary={returnItinerary} /></CardContent>
+          </Card>
+        ) : null}
         {booking?.booking ? (
           <Card>
             <CardHeader><CardTitle>Booking result</CardTitle></CardHeader>

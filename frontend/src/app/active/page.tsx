@@ -1,9 +1,10 @@
 "use client";
 
 import { useState } from "react";
-import { Activity, Bell, XCircle, Zap } from "lucide-react";
+import { Activity, ArrowRight, Bell, XCircle, Zap } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
 import { EmptyState } from "@/components/shared/Status";
 import { CancelReasonDialog } from "@/components/journey/CancelReasonDialog";
 import { JourneyTimeline } from "@/components/journey/JourneyTimeline";
@@ -12,7 +13,20 @@ import { RerouteComparison } from "@/components/monitoring/RerouteComparison";
 import { useDisruptionController } from "@/controllers/disruption-controller";
 import { useBookingStatusSync, useCancelBookingController } from "@/controllers/booking-controller";
 import { formatInr } from "@/lib/utils";
+import {
+  journeyEndpoints,
+  journeySegments,
+  segmentProgress,
+  SEGMENT_PROGRESS_LABEL,
+  type SegmentProgress,
+} from "@/lib/segments";
 import { getSelectedItinerary, useJourneyStore } from "@/store/journey-store";
+
+const PROGRESS_TONE: Record<SegmentProgress, "green" | "amber" | "neutral"> = {
+  finished: "green",
+  ongoing: "amber",
+  upcoming: "neutral",
+};
 
 export default function ActivePage() {
   const userId = useJourneyStore((state) => state.userId);
@@ -39,14 +53,43 @@ export default function ActivePage() {
 
   const currentLeg = itinerary.legs[0];
   const nextLeg = itinerary.legs[1];
+  const { initial, final } = journeyEndpoints(itinerary);
+  const segments = journeySegments(itinerary);
 
   return (
     <div className="grid gap-6 lg:grid-cols-[1fr_360px]">
       <section className="space-y-6">
         <div>
           <h1 className="flex items-center gap-2 text-2xl font-semibold"><Activity className="h-6 w-6" /> Active journey</h1>
+          <p className="mt-1 flex flex-wrap items-center gap-2 text-lg font-medium text-slate-900">
+            <span>{initial}</span>
+            <ArrowRight className="h-4 w-4 text-slate-400" />
+            <span>{final}</span>
+            <Badge tone="amber">Ongoing</Badge>
+          </p>
           <p className="text-sm text-slate-500">Trip {plan.trip_id} · ETA {new Date(itinerary.legs[itinerary.legs.length - 1].arrival).toLocaleString()}</p>
         </div>
+        <Card>
+          <CardHeader><CardTitle>Journey segments</CardTitle></CardHeader>
+          <CardContent className="space-y-2">
+            {segments.map((segment, index) => {
+              const progress = segmentProgress(index, segments.length);
+              return (
+                <div
+                  key={segment.leg_id}
+                  className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm"
+                >
+                  <span className="flex flex-wrap items-center gap-2 font-medium text-slate-900">
+                    <span>{segment.from}</span>
+                    <ArrowRight className="h-3.5 w-3.5 text-slate-400" />
+                    <span>{segment.to}</span>
+                  </span>
+                  <Badge tone={PROGRESS_TONE[progress]}>{SEGMENT_PROGRESS_LABEL[progress]}</Badge>
+                </div>
+              );
+            })}
+          </CardContent>
+        </Card>
         <Card>
           <CardHeader><CardTitle>Progress timeline</CardTitle></CardHeader>
           <CardContent><JourneyTimeline itinerary={itinerary} booking={booking} /></CardContent>

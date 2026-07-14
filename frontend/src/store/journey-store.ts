@@ -17,6 +17,9 @@ interface JourneyState {
   returnDateTime?: string;
   activePlan?: PlanResponse;
   selectedItineraryId?: string;
+  /** Auto-planned return leg when the user requests a round trip. */
+  returnPlan?: PlanResponse;
+  selectedReturnItineraryId?: string;
   booking?: ConfirmPlanResponse;
   disruption?: DisruptionResponse;
   trace: ThoughtStep[];
@@ -25,7 +28,10 @@ interface JourneyState {
   setPriority: (priority: TripPriority) => void;
   setSchedule: (schedule: { startDateTime?: string; returnDateTime?: string }) => void;
   setPlan: (plan: PlanResponse) => void;
+  setReturnPlan: (plan: PlanResponse) => void;
+  clearReturnPlan: () => void;
   selectItinerary: (itineraryId: string) => void;
+  selectReturnItinerary: (itineraryId: string) => void;
   setBooking: (booking: ConfirmPlanResponse) => void;
   updateBookingConfirmation: (confirmation: BookingConfirmation) => void;
   setDisruption: (disruption: DisruptionResponse) => void;
@@ -48,11 +54,22 @@ export const useJourneyStore = create<JourneyState>()(
           activePlan: plan,
           goalText: plan.intent?.raw_text || "",
           selectedItineraryId: plan.selected_itinerary_id ?? plan.itineraries[0]?.itinerary_id,
+          // A fresh onward plan invalidates any previous return leg.
+          returnPlan: undefined,
+          selectedReturnItineraryId: undefined,
           booking: undefined,
           disruption: undefined,
           trace: plan.chain_of_thought,
         }),
+      setReturnPlan: (plan) =>
+        set({
+          returnPlan: plan,
+          selectedReturnItineraryId:
+            plan.selected_itinerary_id ?? plan.itineraries[0]?.itinerary_id,
+        }),
+      clearReturnPlan: () => set({ returnPlan: undefined, selectedReturnItineraryId: undefined }),
       selectItinerary: (itineraryId) => set({ selectedItineraryId: itineraryId }),
+      selectReturnItinerary: (itineraryId) => set({ selectedReturnItineraryId: itineraryId }),
       setBooking: (booking) =>
         set((state) => ({
           booking,
@@ -70,7 +87,15 @@ export const useJourneyStore = create<JourneyState>()(
           trace: [...state.trace, ...disruption.chain_of_thought],
         })),
       resetJourney: () =>
-        set({ activePlan: undefined, selectedItineraryId: undefined, booking: undefined, disruption: undefined, trace: [] }),
+        set({
+          activePlan: undefined,
+          selectedItineraryId: undefined,
+          returnPlan: undefined,
+          selectedReturnItineraryId: undefined,
+          booking: undefined,
+          disruption: undefined,
+          trace: [],
+        }),
     }),
     { name: "commute-os-journey" },
   ),
@@ -78,4 +103,9 @@ export const useJourneyStore = create<JourneyState>()(
 
 export function getSelectedItinerary(plan?: PlanResponse, itineraryId?: string): ItineraryOption | undefined {
   return plan?.itineraries.find((itinerary) => itinerary.itinerary_id === itineraryId) ?? plan?.itineraries[0];
+}
+
+/** Whether the current journey has an auto-planned return leg with options. */
+export function hasReturnLeg(returnPlan?: PlanResponse): boolean {
+  return Boolean(returnPlan?.itineraries?.length);
 }

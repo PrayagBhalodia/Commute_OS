@@ -1,19 +1,17 @@
-import { Armchair, Clock3, IndianRupee, Leaf, MapPinned } from "lucide-react";
+import { Armchair, Clock3, IndianRupee, MapPinned } from "lucide-react";
 import type { ItineraryOption } from "@/models/journey";
 import { formatInr, formatMinutes } from "@/lib/utils";
-import { avgComfort, ecoLabel } from "@/lib/priority";
+import { avgComfort } from "@/lib/priority";
 
 export function JourneyMetrics({ itinerary }: { itinerary: ItineraryOption }) {
   const arrival = itinerary.legs[itinerary.legs.length - 1]?.arrival;
   const comfort = Math.round(avgComfort(itinerary) * 100);
-  const eco = ecoLabel(itinerary);
   return (
-    <dl className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+    <dl className="grid grid-cols-2 gap-3 sm:grid-cols-4">
       <Metric icon={<IndianRupee className="h-4 w-4" />} label="Total" value={formatInr(itinerary.total_price)} />
       <Metric icon={<Clock3 className="h-4 w-4" />} label="Duration" value={formatMinutes(itinerary.total_duration_minutes)} />
       <Metric icon={<MapPinned className="h-4 w-4" />} label="Arrival" value={arrival ? new Date(arrival).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "TBD"} />
       <Metric icon={<Armchair className="h-4 w-4" />} label="Comfort" value={`${comfort}%`} />
-      <Metric icon={<Leaf className="h-4 w-4" />} label="Eco" value={eco.text.replace(" footprint", "")} tone={eco.tone} />
     </dl>
   );
 }

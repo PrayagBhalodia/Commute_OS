@@ -11,6 +11,7 @@ import { useJourneyStore } from "@/store/journey-store";
 export function useJourneyController() {
   const queryClient = useQueryClient();
   const setPlan = useJourneyStore((state) => state.setPlan);
+  const setReturnPlan = useJourneyStore((state) => state.setReturnPlan);
 
   const planMutation = useMutation({
     mutationFn: (payload: PlanRequest) => planJourney(payload),
@@ -22,7 +23,19 @@ export function useJourneyController() {
     onError: (error: Error) => toast.error(error.message),
   });
 
-  return { planMutation };
+  // Return leg: planned automatically after the onward plan when the user
+  // requests a round trip. Kept separate so a return failure never clobbers
+  // the onward plan the user is already looking at.
+  const returnPlanMutation = useMutation({
+    mutationFn: (payload: PlanRequest) => planJourney(payload),
+    onSuccess: (plan) => {
+      setReturnPlan(plan);
+      toast.success("Return journey planned");
+    },
+    onError: (error: Error) => toast.error(`Return journey: ${error.message}`),
+  });
+
+  return { planMutation, returnPlanMutation };
 }
 
 export function usePreferencesController(userId = DEMO_USER_ID) {

@@ -113,6 +113,15 @@ class DMOSOrchestrator:
     # PLAN
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _apply_priority(prefs: UserPreferences, priority: str) -> None:
+        """Bias Agent 2's scoring toward one user-chosen priority for this plan
+        only. ``prefs`` is a request-scoped object and is not persisted here.
+        """
+        prefs.prefer_fastest = priority == "time"
+        prefs.prefer_cheapest = priority == "cost"
+        prefs.prefer_comfort = priority == "comfort"
+
     def plan(self, request: PlanRequest) -> PlanResponse:
         """Run Agent 1 → maps → Agent 2 and return ranked itineraries + CoT."""
         thoughts: list[ThoughtStep] = []
@@ -147,6 +156,20 @@ class DMOSOrchestrator:
         )
         for r in intent.reasoning:
             self._step(thoughts, "observation", "Intent reasoning", r, agent="agent1")
+
+        # Priority-based replanning: the UI sends metadata.priority so switching
+        # Time / Cost / Comfort re-scores the same trip. (Eco is ranked on the
+        # client since the model no longer tracks emissions.)
+        priority = (request.metadata or {}).get("priority")
+        if priority in ("time", "cost", "comfort"):
+            self._apply_priority(intent.preferences, priority)
+            self._step(
+                thoughts,
+                "decision",
+                "Apply user priority",
+                f"Re-scoring options to prioritise «{priority}».",
+                agent="orchestrator",
+            )
 
         # Merge explicit coordinates / overrides
         origin_text = request.origin or intent.origin_hint

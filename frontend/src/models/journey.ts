@@ -138,16 +138,25 @@ export interface ConfirmPlanRequest {
   idempotency_key?: string | null;
 }
 
+// Empty form inputs arrive as "" (or NaN for number fields). The backend
+// treats those as present-but-invalid values (e.g. "" is not a valid
+// datetime), which returns a 422. Normalize empties to undefined so optional
+// fields are simply omitted from the request body.
+const emptyToUndefined = (value: unknown) =>
+  value === "" || value === null || (typeof value === "number" && Number.isNaN(value))
+    ? undefined
+    : value;
+
 export const planRequestSchema = z.object({
   user_id: z.string().min(1),
   goal_text: z.string().min(8),
-  origin: z.string().optional(),
-  destination: z.string().optional(),
-  appointment_time: z.string().optional(),
+  origin: z.preprocess(emptyToUndefined, z.string().optional()),
+  destination: z.preprocess(emptyToUndefined, z.string().optional()),
+  appointment_time: z.preprocess(emptyToUndefined, z.string().optional()),
   return_required: z.boolean().optional(),
-  luggage_count: z.coerce.number().int().min(0).optional(),
-  required_buffer_minutes: z.coerce.number().int().min(0).optional(),
-  max_options: z.coerce.number().int().min(1).max(5),
+  luggage_count: z.preprocess(emptyToUndefined, z.coerce.number().int().min(0).optional()),
+  required_buffer_minutes: z.preprocess(emptyToUndefined, z.coerce.number().int().min(0).optional()),
+  max_options: z.preprocess(emptyToUndefined, z.coerce.number().int().min(1).max(5).default(3)),
 });
 
 export const thoughtStepSchema = z.object({

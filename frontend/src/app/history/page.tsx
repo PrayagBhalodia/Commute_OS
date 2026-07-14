@@ -11,7 +11,13 @@ export default function HistoryPage() {
   const booking = useJourneyStore((state) => state.booking?.booking);
   const disruption = useJourneyStore((state) => state.disruption);
   const rows = [
-    booking ? { status: booking.status, trip: booking.trip_id, label: "Booked journey" } : null,
+    booking
+      ? {
+          status: booking.status,
+          trip: booking.trip_id,
+          label: booking.status === "cancelled" ? "Cancelled journey" : "Booked journey",
+        }
+      : null,
     disruption ? { status: disruption.status, trip: disruption.trip_id, label: "Replanned disruption" } : null,
   ].filter(Boolean) as { status: string; trip: string; label: string }[];
 
@@ -31,7 +37,7 @@ export default function HistoryPage() {
               <CardHeader><CardTitle>{row.label}</CardTitle></CardHeader>
               <CardContent className="flex flex-wrap items-center justify-between gap-3 text-sm">
                 <span>{row.trip}</span>
-                <Badge tone={row.status.includes("confirm") ? "green" : "amber"}>{row.status}</Badge>
+                <Badge tone={row.status === "cancelled" ? "red" : row.status.includes("confirm") ? "green" : "amber"}>{row.status}</Badge>
               </CardContent>
             </Card>
           ))}

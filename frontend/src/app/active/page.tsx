@@ -1,13 +1,17 @@
 "use client";
 
-import { Activity, Bell, Zap } from "lucide-react";
+import { useState } from "react";
+import { Activity, Bell, XCircle, Zap } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { EmptyState } from "@/components/shared/Status";
+import { CancelReasonDialog } from "@/components/journey/CancelReasonDialog";
 import { JourneyTimeline } from "@/components/journey/JourneyTimeline";
 import { DisruptionAlert } from "@/components/monitoring/DisruptionAlert";
 import { RerouteComparison } from "@/components/monitoring/RerouteComparison";
 import { useDisruptionController } from "@/controllers/disruption-controller";
+import { useBookingStatusSync, useCancelBookingController } from "@/controllers/booking-controller";
+import { formatInr } from "@/lib/utils";
 import { getSelectedItinerary, useJourneyStore } from "@/store/journey-store";
 
 export default function ActivePage() {
@@ -18,9 +22,19 @@ export default function ActivePage() {
   const disruption = useJourneyStore((state) => state.disruption);
   const itinerary = getSelectedItinerary(plan, selectedId);
   const disrupt = useDisruptionController();
+  const cancel = useCancelBookingController(userId);
+  const [confirmingTrip, setConfirmingTrip] = useState(false);
+  // Server-driven sync: refetch the booking on mount so a reload reflects
+  // the authoritative status (e.g. a trip cancelled in another session).
+  useBookingStatusSync(booking?.trip_id);
 
   if (!plan || !itinerary || !booking) {
     return <EmptyState title="No active booked journey" message="Plan and confirm the demo journey first, then return here to trigger a disruption." />;
+  }
+
+  // Cancelled trips are history, not active journeys.
+  if (booking.status === "cancelled") {
+    return <EmptyState title="No active journey" message="Your last trip was cancelled and refunded. Find it in the History tab." />;
   }
 
   const currentLeg = itinerary.legs[0];
@@ -54,6 +68,56 @@ export default function ActivePage() {
           <CardContent className="space-y-2 text-sm text-slate-600">
             <p>Weather placeholder: clear enough for planned route.</p>
             <p>Traffic placeholder: monitor first and last-mile buffers.</p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader><CardTitle>Manage booking</CardTitle></CardHeader>
+          <CardContent className="space-y-3 text-sm">
+            {booking.leg_confirmations.map((leg) => {
+              const cancellable = leg.status === "confirmed";
+              return (
+                <div key={leg.leg_id} className="flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="truncate font-medium capitalize">{leg.mode} · {leg.operator}</p>
+                    <p className="capitalize text-slate-500">{leg.status} · {formatInr(leg.price_charged)}</p>
+                  </div>
+                  <Button
+                    variant="ghost"
+                    className="h-8 shrink-0 px-3 text-red-700 hover:bg-red-50"
+                    disabled={!cancellable || cancel.cancelLeg.isPending}
+                    onClick={() => cancel.cancelLeg.mutate({ tripId: booking.trip_id, legId: leg.leg_id })}
+                  >
+                    {cancellable ? "Cancel" : leg.status}
+                  </Button>
+                </div>
+              );
+            })}
+            <div className="border-t border-slate-100 pt-3">
+              {confirmingTrip ? (
+                <CancelReasonDialog
+                  loading={cancel.cancelTrip.isPending}
+                  onDismiss={() => setConfirmingTrip(false)}
+                  onConfirm={({ category, note }) =>
+                    cancel.cancelTrip.mutate(
+                      {
+                        tripId: booking.trip_id,
+                        reason: { reason_category: category, reason_note: note ?? null },
+                      },
+                      { onSuccess: () => setConfirmingTrip(false) },
+                    )
+                  }
+                />
+              ) : (
+                <Button
+                  variant="danger"
+                  className="w-full"
+                  disabled={!booking.leg_confirmations.some((leg) => leg.status === "confirmed")}
+                  onClick={() => setConfirmingTrip(true)}
+                >
+                  <XCircle className="h-4 w-4" /> Cancel entire trip
+                </Button>
+              )}
+            </div>
           </CardContent>
         </Card>
         <Button

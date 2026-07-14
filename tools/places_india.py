@@ -51,6 +51,96 @@ INDIA_PLACES: list[dict[str, Any]] = [
     {"place_id": "in-taj", "name": "Taj Mahal", "address": "Taj Mahal, Agra, Uttar Pradesh", "city": "Agra", "state": "Uttar Pradesh", "lat": 27.1751, "lng": 78.0421, "place_type": "landmark"},
 ]
 
+# ---------------------------------------------------------------------------
+# Neighbourhood / locality gazetteer for major metros.
+#
+# This is the "dataset" that gives the parser and geocoder precision for
+# intra-city trips (e.g. "Koramangala to Indiranagar"): each entry carries an
+# accurate lat/lng AND its parent city, so two localities in the same metro
+# both resolve inside that metro instead of drifting to a same-named POI or a
+# hardcoded fallback city. Coordinates are approximate locality centroids —
+# good enough for distance/mode estimation in this prototype. For a larger
+# gazetteer, seed this list from GeoNames (IN.txt, feature class "P") or the
+# OSM place=suburb/neighbourhood layer.
+# ---------------------------------------------------------------------------
+INDIA_LOCALITIES: list[dict[str, Any]] = [
+    # Bengaluru
+    {"place_id": "in-blr-koramangala", "name": "Koramangala", "city": "Bengaluru", "state": "Karnataka", "lat": 12.9352, "lng": 77.6245},
+    {"place_id": "in-blr-indiranagar", "name": "Indiranagar", "city": "Bengaluru", "state": "Karnataka", "lat": 12.9719, "lng": 77.6412},
+    {"place_id": "in-blr-whitefield", "name": "Whitefield", "city": "Bengaluru", "state": "Karnataka", "lat": 12.9698, "lng": 77.7500},
+    {"place_id": "in-blr-hsr", "name": "HSR Layout", "city": "Bengaluru", "state": "Karnataka", "lat": 12.9116, "lng": 77.6389},
+    {"place_id": "in-blr-jayanagar", "name": "Jayanagar", "city": "Bengaluru", "state": "Karnataka", "lat": 12.9250, "lng": 77.5938},
+    {"place_id": "in-blr-marathahalli", "name": "Marathahalli", "city": "Bengaluru", "state": "Karnataka", "lat": 12.9560, "lng": 77.7010},
+    {"place_id": "in-blr-ecity", "name": "Electronic City", "city": "Bengaluru", "state": "Karnataka", "lat": 12.8452, "lng": 77.6602},
+    {"place_id": "in-blr-mgroad", "name": "MG Road", "city": "Bengaluru", "state": "Karnataka", "lat": 12.9756, "lng": 77.6068},
+    {"place_id": "in-blr-malleshwaram", "name": "Malleshwaram", "city": "Bengaluru", "state": "Karnataka", "lat": 13.0035, "lng": 77.5647},
+    {"place_id": "in-blr-hebbal", "name": "Hebbal", "city": "Bengaluru", "state": "Karnataka", "lat": 13.0358, "lng": 77.5970},
+    {"place_id": "in-blr-btm", "name": "BTM Layout", "city": "Bengaluru", "state": "Karnataka", "lat": 12.9166, "lng": 77.6101},
+    {"place_id": "in-blr-yelahanka", "name": "Yelahanka", "city": "Bengaluru", "state": "Karnataka", "lat": 13.1007, "lng": 77.5963},
+    {"place_id": "in-blr-bellandur", "name": "Bellandur", "city": "Bengaluru", "state": "Karnataka", "lat": 12.9260, "lng": 77.6762},
+    {"place_id": "in-blr-sarjapur", "name": "Sarjapur Road", "city": "Bengaluru", "state": "Karnataka", "lat": 12.9010, "lng": 77.6870},
+    {"place_id": "in-blr-jpnagar", "name": "JP Nagar", "city": "Bengaluru", "state": "Karnataka", "lat": 12.9078, "lng": 77.5851},
+    {"place_id": "in-blr-banashankari", "name": "Banashankari", "city": "Bengaluru", "state": "Karnataka", "lat": 12.9255, "lng": 77.5468},
+    {"place_id": "in-blr-rajajinagar", "name": "Rajajinagar", "city": "Bengaluru", "state": "Karnataka", "lat": 12.9910, "lng": 77.5520},
+    {"place_id": "in-blr-krpuram", "name": "KR Puram", "city": "Bengaluru", "state": "Karnataka", "lat": 13.0075, "lng": 77.6960},
+    {"place_id": "in-blr-domlur", "name": "Domlur", "city": "Bengaluru", "state": "Karnataka", "lat": 12.9610, "lng": 77.6380},
+    {"place_id": "in-blr-ulsoor", "name": "Ulsoor", "city": "Bengaluru", "state": "Karnataka", "lat": 12.9820, "lng": 77.6210},
+    {"place_id": "in-blr-yeshwanthpur", "name": "Yeshwanthpur", "city": "Bengaluru", "state": "Karnataka", "lat": 13.0287, "lng": 77.5540},
+    # Mumbai
+    {"place_id": "in-bom-andheri", "name": "Andheri", "city": "Mumbai", "state": "Maharashtra", "lat": 19.1197, "lng": 72.8468},
+    {"place_id": "in-bom-bandra", "name": "Bandra", "city": "Mumbai", "state": "Maharashtra", "lat": 19.0596, "lng": 72.8295},
+    {"place_id": "in-bom-powai", "name": "Powai", "city": "Mumbai", "state": "Maharashtra", "lat": 19.1176, "lng": 72.9060},
+    {"place_id": "in-bom-colaba", "name": "Colaba", "city": "Mumbai", "state": "Maharashtra", "lat": 18.9067, "lng": 72.8147},
+    {"place_id": "in-bom-dadar", "name": "Dadar", "city": "Mumbai", "state": "Maharashtra", "lat": 19.0178, "lng": 72.8478},
+    {"place_id": "in-bom-juhu", "name": "Juhu", "city": "Mumbai", "state": "Maharashtra", "lat": 19.1075, "lng": 72.8263},
+    {"place_id": "in-bom-worli", "name": "Worli", "city": "Mumbai", "state": "Maharashtra", "lat": 19.0176, "lng": 72.8175},
+    {"place_id": "in-bom-goregaon", "name": "Goregaon", "city": "Mumbai", "state": "Maharashtra", "lat": 19.1663, "lng": 72.8526},
+    {"place_id": "in-bom-bkc", "name": "Bandra Kurla Complex", "city": "Mumbai", "state": "Maharashtra", "lat": 19.0662, "lng": 72.8690},
+    {"place_id": "in-navi-vashi", "name": "Vashi", "city": "Navi Mumbai", "state": "Maharashtra", "lat": 19.0770, "lng": 72.9986},
+    # Delhi NCR
+    {"place_id": "in-del-cp", "name": "Connaught Place", "city": "Delhi", "state": "Delhi", "lat": 28.6315, "lng": 77.2167},
+    {"place_id": "in-del-saket", "name": "Saket", "city": "Delhi", "state": "Delhi", "lat": 28.5245, "lng": 77.2066},
+    {"place_id": "in-del-dwarka", "name": "Dwarka", "city": "Delhi", "state": "Delhi", "lat": 28.5921, "lng": 77.0460},
+    {"place_id": "in-del-karolbagh", "name": "Karol Bagh", "city": "Delhi", "state": "Delhi", "lat": 28.6512, "lng": 77.1907},
+    {"place_id": "in-del-hauzkhas", "name": "Hauz Khas", "city": "Delhi", "state": "Delhi", "lat": 28.5494, "lng": 77.2001},
+    {"place_id": "in-del-nehruplace", "name": "Nehru Place", "city": "Delhi", "state": "Delhi", "lat": 28.5495, "lng": 77.2519},
+    {"place_id": "in-ncr-gurgaon", "name": "Gurgaon", "city": "Gurugram", "state": "Haryana", "lat": 28.4595, "lng": 77.0266},
+    {"place_id": "in-ncr-noida", "name": "Noida", "city": "Noida", "state": "Uttar Pradesh", "lat": 28.5355, "lng": 77.3910},
+    {"place_id": "in-ncr-cybercity", "name": "Cyber City", "city": "Gurugram", "state": "Haryana", "lat": 28.4949, "lng": 77.0895},
+    # Hyderabad
+    {"place_id": "in-hyd-gachibowli", "name": "Gachibowli", "city": "Hyderabad", "state": "Telangana", "lat": 17.4401, "lng": 78.3489},
+    {"place_id": "in-hyd-hitec", "name": "HITEC City", "city": "Hyderabad", "state": "Telangana", "lat": 17.4435, "lng": 78.3772},
+    {"place_id": "in-hyd-banjara", "name": "Banjara Hills", "city": "Hyderabad", "state": "Telangana", "lat": 17.4156, "lng": 78.4347},
+    {"place_id": "in-hyd-jubilee", "name": "Jubilee Hills", "city": "Hyderabad", "state": "Telangana", "lat": 17.4325, "lng": 78.4071},
+    {"place_id": "in-hyd-madhapur", "name": "Madhapur", "city": "Hyderabad", "state": "Telangana", "lat": 17.4483, "lng": 78.3915},
+    {"place_id": "in-hyd-secunderabad", "name": "Secunderabad", "city": "Hyderabad", "state": "Telangana", "lat": 17.4399, "lng": 78.4983},
+    {"place_id": "in-hyd-kondapur", "name": "Kondapur", "city": "Hyderabad", "state": "Telangana", "lat": 17.4615, "lng": 78.3639},
+    # Pune
+    {"place_id": "in-pnq-hinjewadi", "name": "Hinjewadi", "city": "Pune", "state": "Maharashtra", "lat": 18.5913, "lng": 73.7389},
+    {"place_id": "in-pnq-kharadi", "name": "Kharadi", "city": "Pune", "state": "Maharashtra", "lat": 18.5515, "lng": 73.9410},
+    {"place_id": "in-pnq-baner", "name": "Baner", "city": "Pune", "state": "Maharashtra", "lat": 18.5590, "lng": 73.7868},
+    {"place_id": "in-pnq-vimannagar", "name": "Viman Nagar", "city": "Pune", "state": "Maharashtra", "lat": 18.5679, "lng": 73.9143},
+    {"place_id": "in-pnq-koregaon", "name": "Koregaon Park", "city": "Pune", "state": "Maharashtra", "lat": 18.5362, "lng": 73.8939},
+    {"place_id": "in-pnq-hadapsar", "name": "Hadapsar", "city": "Pune", "state": "Maharashtra", "lat": 18.5089, "lng": 73.9260},
+    # Chennai
+    {"place_id": "in-maa-tnagar", "name": "T Nagar", "city": "Chennai", "state": "Tamil Nadu", "lat": 13.0418, "lng": 80.2341},
+    {"place_id": "in-maa-adyar", "name": "Adyar", "city": "Chennai", "state": "Tamil Nadu", "lat": 13.0012, "lng": 80.2565},
+    {"place_id": "in-maa-velachery", "name": "Velachery", "city": "Chennai", "state": "Tamil Nadu", "lat": 12.9791, "lng": 80.2210},
+    {"place_id": "in-maa-annanagar", "name": "Anna Nagar", "city": "Chennai", "state": "Tamil Nadu", "lat": 13.0850, "lng": 80.2101},
+    {"place_id": "in-maa-guindy", "name": "Guindy", "city": "Chennai", "state": "Tamil Nadu", "lat": 13.0067, "lng": 80.2206},
+    # Kolkata
+    {"place_id": "in-ccu-saltlake", "name": "Salt Lake", "city": "Kolkata", "state": "West Bengal", "lat": 22.5867, "lng": 88.4171},
+    {"place_id": "in-ccu-parkstreet", "name": "Park Street", "city": "Kolkata", "state": "West Bengal", "lat": 22.5525, "lng": 88.3520},
+    {"place_id": "in-ccu-newtown", "name": "New Town", "city": "Kolkata", "state": "West Bengal", "lat": 22.5800, "lng": 88.4600},
+]
+
+# Give every locality a consistent address + place_type without repeating it above.
+for _loc in INDIA_LOCALITIES:
+    _loc.setdefault("place_type", "locality")
+    _loc.setdefault("address", f"{_loc['name']}, {_loc['city']}, {_loc['state']}, India")
+
+INDIA_PLACES = INDIA_PLACES + INDIA_LOCALITIES
+
 # City → nearest major airport place_id
 CITY_AIRPORT: dict[str, str] = {
     "ahmedabad": "in-amd-apt",

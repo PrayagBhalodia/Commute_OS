@@ -218,6 +218,17 @@ class ReconciliationResult(BaseModel):
         return v
 
 
+class CancelTripRequest(BaseModel):
+    """Reason payload required when cancelling an entire trip.
+
+    The structured category (plus optional note) is persisted with the
+    booking and fed to the preference agent as a learning signal.
+    """
+
+    reason_category: str = Field(min_length=1)
+    reason_note: Optional[str] = None
+
+
 class CancelLegResult(BaseModel):
     """Result of cancelling a single booked leg."""
 

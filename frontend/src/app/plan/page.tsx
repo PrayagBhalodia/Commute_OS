@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useForm } from "react-hook-form";
+import { toast } from "sonner";
 import { ArrowRight, RotateCcw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input, Textarea } from "@/components/ui/input";
@@ -27,8 +28,12 @@ export default function PlanPage() {
   });
 
   const submit = form.handleSubmit((values) => {
-    const parsed = planRequestSchema.parse(values);
-    planMutation.mutate({ ...parsed, metadata: { priority: "time_reliability" } });
+    const parsed = planRequestSchema.safeParse(values);
+    if (!parsed.success) {
+      toast.error(parsed.error.issues[0]?.message ?? "Please describe your journey.");
+      return;
+    }
+    planMutation.mutate({ ...parsed.data, metadata: { priority: "time_reliability" } });
   });
 
   return (
@@ -38,13 +43,9 @@ export default function PlanPage() {
           <CardHeader><CardTitle>Plan a complete journey</CardTitle></CardHeader>
           <CardContent>
             <form onSubmit={submit} className="space-y-4">
-              <label className="block text-sm font-medium">Natural-language goal
+              <label className="block text-sm font-medium">Where do you need to be?
                 <Textarea className="mt-2" {...form.register("goal_text")} />
               </label>
-              <div className="grid gap-3 sm:grid-cols-2">
-                <label className="block text-sm font-medium">Origin<Input className="mt-2" {...form.register("origin")} /></label>
-                <label className="block text-sm font-medium">Destination<Input className="mt-2" {...form.register("destination")} /></label>
-              </div>
               <label className="block text-sm font-medium">Date/deadline<Input className="mt-2" type="datetime-local" {...form.register("appointment_time")} /></label>
               <div className="grid gap-3 sm:grid-cols-3">
                 <label className="block text-sm font-medium">Passengers<Input className="mt-2" type="number" min={1} defaultValue={1} /></label>

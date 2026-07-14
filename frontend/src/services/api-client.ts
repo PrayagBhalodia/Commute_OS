@@ -21,17 +21,32 @@ export class ApiClientError extends Error {
   }
 }
 
+type ValidationIssue = { loc?: (string | number)[]; msg?: string };
+
+function formatDetail(detail: unknown, status: number): string {
+  if (typeof detail === "string") return detail;
+  // FastAPI returns validation errors as an array of {loc, msg} objects.
+  if (Array.isArray(detail)) {
+    const parts = (detail as ValidationIssue[])
+      .map((issue) => {
+        const field = issue.loc?.filter((p) => p !== "body").join(".");
+        return field ? `${field}: ${issue.msg}` : issue.msg;
+      })
+      .filter(Boolean);
+    if (parts.length) return `Invalid request — ${parts.join("; ")}`;
+  }
+  return `API request failed with status ${status}.`;
+}
+
 apiClient.interceptors.response.use(
   (response) => response,
-  (error: AxiosError<{ detail?: string }>) => {
+  (error: AxiosError<{ detail?: unknown }>) => {
     const status = error.response?.status;
     const detail = error.response?.data?.detail ?? error.message;
     const message =
       status === undefined
         ? "Backend offline. Start FastAPI on 127.0.0.1:8000 or use the simulated fallback."
-        : typeof detail === "string"
-          ? detail
-          : `API request failed with status ${status}.`;
+        : formatDetail(detail, status);
     return Promise.reject(new ApiClientError(message, status, detail));
   },
 );

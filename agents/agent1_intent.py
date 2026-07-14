@@ -17,7 +17,57 @@ from typing import Any, Optional
 
 from agents.user_memory import UserMemoryStore
 from api.schemas import GoalContext, IntentResult, UserPreferences
-from tools.llm import gemini_enabled, generate_json
+from tools.llm import extract_json, gemini_enabled, generate_with_tools
+from tools.maps_api import geocode as _geocode
+from tools.places_india import resolve_place_name as _resolve_place_name
+
+
+# ---------------------------------------------------------------------------
+# Tools exposed to Gemini via function calling (Agent 1).
+#
+# These are plain module-level callables so the SDK can derive each
+# function-declaration schema from the signature + docstring. They wrap the
+# existing geocoding/catalog helpers and trim results to a JSON-safe subset.
+# ---------------------------------------------------------------------------
+
+_PLACE_FIELDS = ("name", "address", "city", "state", "lat", "lng", "place_type", "source")
+
+
+def _trim_place(place: dict[str, Any]) -> dict[str, Any]:
+    """Keep only JSON-safe, model-relevant fields from a place dict."""
+    return {k: place.get(k) for k in _PLACE_FIELDS if place.get(k) is not None}
+
+
+def resolve_india_place(name: str) -> dict[str, Any]:
+    """Resolve an Indian place name against the offline curated catalog.
+
+    Use this first for any city, locality, landmark, or airport in India.
+    Returns the canonical name, city, state, coordinates and place_type when
+    the place is in the catalog.
+
+    Args:
+        name: A place, locality, city, landmark, or airport name in India.
+    """
+    place = _resolve_place_name(name)
+    if not place:
+        return {"found": False, "query": name}
+    return {"found": True, **_trim_place(place)}
+
+
+def geocode_place(query: str) -> dict[str, Any]:
+    """Geocode a free-text place to coordinates and a canonical address.
+
+    Tries the curated India catalog, then free OpenStreetMap Nominatim, then
+    Google (if configured). Use this when resolve_india_place did not find the
+    place.
+
+    Args:
+        query: Free-text place description to geocode.
+    """
+    place = _geocode(query)
+    if not place:
+        return {"found": False, "query": query}
+    return {"found": True, **_trim_place(place)}
 
 
 class IntentAgent:
@@ -83,9 +133,18 @@ class IntentAgent:
         # --- Destination extraction ---
         dest = destination_hint
         if not dest:
-            # Patterns: "at X", "to X", "in X"
+            # Patterns: "to X", "at X", "reach X", "go to X", "visit X", etc.
+            # Capture only the run of Title-Case words after the trigger (place
+            # names are capitalized) so trailing lowercase sentence words like
+            # "for a meeting tomorrow" don't get swept into the destination.
+            # "from X" is handled separately as the origin, so exclude it here.
+            # (?i:...) makes only the trigger words case-insensitive (so a
+            # sentence-initial "To"/"Reach" still matches) while the captured
+            # place name stays Title-Case-only.
             m = re.search(
-                r"\b(?:at|to|towards|for)\s+([A-Z][A-Za-z0-9 .&'-]{2,40})",
+                r"(?i:\b(?:to|at|towards?|for|reach(?:ing)?|"
+                r"visit(?:ing)?|headed|heading))\s+"
+                r"([A-Z][A-Za-z0-9&'-]*(?:\s+[A-Z][A-Za-z0-9&'-]*)*)",
                 raw,
             )
             if m:
@@ -148,17 +207,38 @@ class IntentAgent:
         # --- Origin ---
         origin = origin_hint
         if not origin:
+            # 1. Explicit origin markers: "from X", "leaving X", "starting from
+            #    X", "currently in/at X", "I'm in/at/near X", "based in X".
             m = re.search(
-                r"\b(?:from|leaving)\s+([A-Z][A-Za-z0-9 .&'-]{2,40})",
+                r"(?i:\b(?:from|leaving|starting\s+from|start\s+from|"
+                r"currently\s+(?:in|at)|based\s+(?:in|at)|"
+                r"i'm\s+(?:in|at|near)|i\s+am\s+(?:in|at|near)))\s+"
+                r"([A-Z][A-Za-z0-9&'-]*(?:\s+[A-Z][A-Za-z0-9&'-]*)*)",
                 raw,
             )
             if m:
                 origin = m.group(1).strip(" .,")
-            elif prefs.home_label:
+            if not origin:
+                # 2. "A to B" phrasing without an explicit "from": the Title-Case
+                #    place immediately before " to <Place>" is the origin.
+                m2 = re.search(
+                    r"\b([A-Z][A-Za-z0-9&'-]*(?:\s+[A-Z][A-Za-z0-9&'-]*)*)"
+                    r"(?i:\s+to\s+)"
+                    r"[A-Z][A-Za-z0-9&'-]*",
+                    raw,
+                )
+                if m2:
+                    candidate = m2.group(1).strip(" .,")
+                    # Don't mistake the destination (or a leading verb) for origin.
+                    if candidate.lower() != (dest or "").lower():
+                        origin = candidate
+            if not origin and prefs.home_label:
                 origin = prefs.home_label
                 reasoning.append(f"Using learned home as origin: {origin}.")
         if origin:
             reasoning.append(f"Origin hint: {origin}.")
+        else:
+            reasoning.append("No origin found in text; will ask the user.")
 
         # --- Return ---
         ret = return_required
@@ -255,17 +335,42 @@ class IntentAgent:
 
         # --- Optional LLM enrichment (fills gaps only; never overrides rules) ---
         llm_used = False
+        resolved_meta: dict[str, Any] = {}
         if use_llm and raw and gemini_enabled():
             llm = self._llm_extract(raw)
             if llm:
                 llm_used = True
+                tool_calls = llm.pop("_tool_calls", [])
                 reasoning.append("Gemini enrichment applied to fill missing fields.")
+                if tool_calls:
+                    reasoning.append(
+                        "Gemini invoked tools: " + ", ".join(tool_calls) + "."
+                    )
+                    # Only trust resolved coordinates when a tool actually ran.
+                    if isinstance(llm.get("origin_resolved"), dict):
+                        resolved_meta["origin_resolved"] = llm["origin_resolved"]
+                    if isinstance(llm.get("destination_resolved"), dict):
+                        resolved_meta["destination_resolved"] = llm["destination_resolved"]
                 if not dest and llm.get("destination"):
-                    dest = str(llm["destination"]).strip()
-                    reasoning.append(f"LLM destination: {dest}.")
+                    candidate = self._sanitize_llm_place(str(llm["destination"]), raw)
+                    if candidate:
+                        dest = candidate
+                        reasoning.append(f"LLM destination: {dest}.")
+                    else:
+                        reasoning.append(
+                            f"Discarded LLM destination guess "
+                            f"{llm['destination']!r}; not grounded in user text."
+                        )
                 if not origin and llm.get("origin"):
-                    origin = str(llm["origin"]).strip()
-                    reasoning.append(f"LLM origin: {origin}.")
+                    candidate = self._sanitize_llm_place(str(llm["origin"]), raw)
+                    if candidate:
+                        origin = candidate
+                        reasoning.append(f"LLM origin: {origin}.")
+                    else:
+                        reasoning.append(
+                            f"Discarded LLM origin guess "
+                            f"{llm['origin']!r}; not grounded in user text."
+                        )
                 if purpose == "general" and llm.get("purpose"):
                     purpose = str(llm["purpose"]).strip().lower().replace(" ", "_")
                     reasoning.append(f"LLM purpose: {purpose}.")
@@ -294,6 +399,7 @@ class IntentAgent:
                 "origin_hint": origin,
                 "parsed_by": "IntentAgent.v1+gemini" if llm_used else "IntentAgent.v1",
                 "llm_used": llm_used,
+                **resolved_meta,
             },
         )
 
@@ -344,27 +450,84 @@ class IntentAgent:
     # ------------------------------------------------------------------
 
     def _llm_extract(self, text: str) -> Optional[dict[str, Any]]:
-        """Ask Gemini to extract structured mobility fields as JSON.
+        """Ask Gemini to extract structured mobility fields, calling the
+        geocoding/catalog tools to ground origin and destination.
 
-        Returns ``None`` on any failure so the deterministic parse stands alone.
+        Returns the parsed JSON dict (optionally carrying a ``_tool_calls``
+        list of tool names invoked), or ``None`` on any failure so the
+        deterministic parse stands alone.
         """
         system = (
             "You extract structured travel intent from a user's message about "
-            "commuting within India. Reply with a single JSON object only."
+            "commuting within India, and you ground the origin and destination "
+            "using the provided tools.\n"
+            "Rules:\n"
+            "- Use the user's own wording for place names; never invent a more "
+            "specific mall, building, or business the user did not name.\n"
+            "- When the user names an origin or destination, call "
+            "resolve_india_place first; if it returns found=false, call "
+            "geocode_place.\n"
+            "- After resolving, reply with a SINGLE JSON object only, no prose."
         )
         prompt = (
-            "Extract these fields from the message (use null when unknown):\n"
-            "  origin: string | null (starting place)\n"
-            "  destination: string | null (where they need to go)\n"
+            f"Message: {text!r}\n\n"
+            "Extract these fields (use null when unknown):\n"
+            "  origin: string | null (starting place, in the user's own "
+            "wording)\n"
+            "  destination: string | null (where they need to go, user's "
+            "wording)\n"
             "  purpose: one of [interview, meeting, flight_catch, tourism, "
             "medical, education, commute, general] | null\n"
             "  return_required: boolean | null (do they need a return trip)\n"
             "  luggage_count: integer | null (number of bags/suitcases)\n"
             "  required_buffer_minutes: integer | null (how early they must "
-            "arrive, in minutes)\n\n"
-            f"Message: {text!r}\n"
+            "arrive, in minutes)\n"
+            "  origin_resolved / destination_resolved: object | null — when you "
+            "resolved a place via a tool, include {name, lat, lng, city, "
+            "state, place_type} from the tool result; otherwise null.\n\n"
             'Respond with JSON like {"origin": ..., "destination": ..., '
             '"purpose": ..., "return_required": ..., "luggage_count": ..., '
-            '"required_buffer_minutes": ...}.'
+            '"required_buffer_minutes": ..., "origin_resolved": ..., '
+            '"destination_resolved": ...}.'
         )
-        return generate_json(prompt, system=system, temperature=0.1)
+        result = generate_with_tools(
+            prompt,
+            system=system,
+            tools=[resolve_india_place, geocode_place],
+            temperature=0.1,
+        )
+        if not result:
+            return None
+        data = extract_json(result.get("text", ""))
+        if data is None:
+            return None
+        if result.get("tool_calls"):
+            data["_tool_calls"] = result["tool_calls"]
+        return data
+
+    @staticmethod
+    def _sanitize_llm_place(value: str, raw_text: str) -> Optional[str]:
+        """Guard against the LLM 'autocompleting' a plain place name into a
+        specific business/landmark the user never mentioned (e.g. turning
+        "Koramangala" into "Nexus Koramangala"). Only trust wording that
+        actually appears in the user's own text.
+        """
+        val = value.strip()
+        if not val:
+            return None
+        raw_lower = raw_text.lower()
+        if val.lower() in raw_lower:
+            return val
+        val_words = val.split()
+        kept = [w for w in val_words if w.lower() in raw_lower]
+        if not kept:
+            return None
+        if len(kept) == len(val_words):
+            return val
+        # Partial overlap: the LLM likely bolted an extra business/landmark
+        # name onto a real place the user mentioned. Rebuild from the
+        # user's own text instead of trusting the LLM's invented words.
+        raw_words = re.findall(r"[A-Za-z0-9]+", raw_text)
+        kept_lower = {w.lower() for w in kept}
+        matched_raw = [w for w in raw_words if w.lower() in kept_lower]
+        return " ".join(matched_raw) if matched_raw else None

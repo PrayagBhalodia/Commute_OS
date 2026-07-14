@@ -33,6 +33,20 @@ export interface BookingConfirmation {
   created_at: string;
 }
 
+export interface CancelTripRequest {
+  reason_category: string;
+  reason_note?: string | null;
+}
+
+export interface CancelLegResult {
+  trip_id: string;
+  leg_id: string;
+  status: string;
+  refund_amount: number;
+  wallet_balance_after: number;
+  message: string;
+}
+
 export interface ConfirmPlanResponse {
   trip_id: string;
   booking?: BookingConfirmation | null;

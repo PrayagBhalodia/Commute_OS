@@ -44,6 +44,51 @@ _NOMINATIM_UA = os.environ.get(
 _geo_cache: dict[str, Optional[dict[str, Any]]] = {}
 _geo_lock = threading.Lock()
 
+# OSM place types that represent an area/locality rather than a specific
+# business or landmark inside it (used to disambiguate a bare area name
+# like "Koramangala" from a same-named POI like "Nexus Koramangala").
+_LOCALITY_OSM_TYPES = {
+    "suburb", "neighbourhood", "quarter", "city_district", "town",
+    "village", "hamlet", "city", "borough", "state_district", "county",
+    "administrative",
+}
+_POI_OSM_CLASSES = {"shop", "amenity", "tourism", "leisure", "office", "craft"}
+
+
+def _score_nominatim_candidate(candidate: dict[str, Any], query_lower: str) -> tuple[int, int]:
+    name = (candidate.get("name") or "").strip().lower()
+    osm_class = candidate.get("class") or ""
+    osm_type = candidate.get("type") or ""
+    exact = 1 if name == query_lower else 0
+    bias = 0
+    if osm_class == "place" and osm_type in _LOCALITY_OSM_TYPES:
+        bias += 1
+    if osm_class in _POI_OSM_CLASSES and not exact:
+        bias -= 1
+    return (exact, bias)
+
+
+def _pick_best_nominatim_result(
+    candidates: list[dict[str, Any]], query: str
+) -> dict[str, Any]:
+    """Pick the best geocode match out of Nominatim's ranked candidates.
+
+    Nominatim's own top hit for a bare area name (e.g. "Koramangala") is
+    sometimes a well-known POI within that area (e.g. a mall named "Nexus
+    Koramangala") rather than the area itself. Since the query was just the
+    area name, prefer an exact name match, then prefer locality/administrative
+    results over shops/malls/amenities. Ties fall back to Nominatim's own
+    ranking (candidate order).
+    """
+    query_lower = query.strip().lower()
+    best = candidates[0]
+    best_score = _score_nominatim_candidate(best, query_lower)
+    for candidate in candidates[1:]:
+        score = _score_nominatim_candidate(candidate, query_lower)
+        if score > best_score:
+            best, best_score = candidate, score
+    return best
+
 
 def nominatim_enabled() -> bool:
     """True unless explicitly disabled and httpx is importable."""
@@ -62,7 +107,7 @@ def _nominatim_search(query: str) -> Optional[dict[str, Any]]:
         params = {
             "q": query,
             "format": "jsonv2",
-            "limit": 1,
+            "limit": 5,
             "addressdetails": 1,
             "countrycodes": "in",
         }
@@ -70,7 +115,7 @@ def _nominatim_search(query: str) -> Optional[dict[str, Any]]:
             resp = client.get(f"{_NOMINATIM_BASE}/search", params=params)
             data = resp.json()
         if isinstance(data, list) and data:
-            r0 = data[0]
+            r0 = _pick_best_nominatim_result(data, query)
             addr = r0.get("address", {}) or {}
             result = {
                 "place_id": f"osm-{r0.get('osm_type', 'n')[0]}{r0.get('osm_id', '')}",

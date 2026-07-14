@@ -30,6 +30,7 @@ from agents.agent4_wallet import WalletAgent
 from agents.agent5_disruption import DisruptionAgent
 from agents.user_memory import UserMemoryStore
 from api.schemas import (
+    BookingConfirmation,
     BookingRequest,
     ConfirmPlanRequest,
     ConfirmPlanResponse,
@@ -166,34 +167,83 @@ class DMOSOrchestrator:
                 "Please select a destination on the India map or type a place name.",
                 agent="orchestrator",
             )
-            resp = PlanResponse(
-                trip_id=trip_id,
-                user_id=request.user_id,
-                intent=intent,
-                origin=None,  # type: ignore[arg-type]
-                destination=None,  # type: ignore[arg-type]
-                distance_km=0.0,
-                itineraries=[],
-                chain_of_thought=thoughts,
-                status="needs_input",
-                message="Destination is required. Pick on map or type a place.",
-            )
-            # Fix required PlaceInfo — use placeholders for schema validity
+            # Build valid placeholder PlaceInfo objects up front — PlanResponse
+            # requires non-null origin/destination, so passing None here raises
+            # a Pydantic ValidationError (500) instead of returning needs_input.
             from api.schemas import PlaceInfo
 
-            resp.origin = PlaceInfo(
+            placeholder_origin = PlaceInfo(
                 place_id="pending",
                 name=origin_text or "Unknown",
                 address="",
                 lat=request.origin_lat or 0.0,
                 lng=request.origin_lng or 0.0,
             )
-            resp.destination = PlaceInfo(
+            placeholder_destination = PlaceInfo(
                 place_id="pending",
                 name="(select destination)",
                 address="",
                 lat=0.0,
                 lng=0.0,
+            )
+            resp = PlanResponse(
+                trip_id=trip_id,
+                user_id=request.user_id,
+                intent=intent,
+                origin=placeholder_origin,
+                destination=placeholder_destination,
+                distance_km=0.0,
+                itineraries=[],
+                chain_of_thought=thoughts,
+                status="needs_input",
+                message=(
+                    "I couldn't find a destination in your message. "
+                    "Please mention where you need to go."
+                ),
+            )
+            self._plans[trip_id] = resp
+            return resp
+
+        # Origin gate: if we genuinely could not determine a starting point,
+        # ask for it instead of silently defaulting to a hardcoded city
+        # (which produced surprises like "Koramangala → Indiranagar" being
+        # planned from Ahmedabad).
+        if not origin_text and request.origin_lat is None:
+            self._step(
+                thoughts,
+                "wait_user",
+                "Origin required",
+                "Please tell me where you're starting from.",
+                agent="orchestrator",
+            )
+            from api.schemas import PlaceInfo
+
+            resp = PlanResponse(
+                trip_id=trip_id,
+                user_id=request.user_id,
+                intent=intent,
+                origin=PlaceInfo(
+                    place_id="pending",
+                    name="(enter starting point)",
+                    address="",
+                    lat=0.0,
+                    lng=0.0,
+                ),
+                destination=PlaceInfo(
+                    place_id="pending",
+                    name=dest_text or "(destination)",
+                    address="",
+                    lat=request.destination_lat or 0.0,
+                    lng=request.destination_lng or 0.0,
+                ),
+                distance_km=0.0,
+                itineraries=[],
+                chain_of_thought=thoughts,
+                status="needs_input",
+                message=(
+                    f"Got your destination ({dest_text}). Where are you "
+                    "starting from? Please mention your origin."
+                ),
             )
             self._plans[trip_id] = resp
             return resp
@@ -509,6 +559,54 @@ class DMOSOrchestrator:
             selected_itinerary_id=request.selected_itinerary_id,
             metadata=request.metadata,
         )
+
+    def cancel_trip(
+        self,
+        trip_id: str,
+        reason_category: str,
+        reason_note: Optional[str] = None,
+    ) -> BookingConfirmation:
+        """Cancel a whole trip with a required reason.
+
+        Agent 3 cancels the legs (refunding the wallet) and persists the
+        structured reason on the booking; the reason is then fed to the
+        preference agent through the existing feedback pipeline so future
+        planning can learn from it.
+        """
+        if not (reason_category or "").strip():
+            raise ValueError("reason_category is required to cancel a trip")
+
+        before = self.booking.get_booking(trip_id)
+        if before is None:
+            raise BookingError(f"No booking found for trip_id={trip_id}")
+        had_confirmed_legs = any(
+            lc.status == "confirmed" for lc in before.leg_confirmations
+        )
+
+        updated = self.booking.cancel_trip(
+            trip_id,
+            reason_category=reason_category,
+            reason_note=reason_note,
+        )
+
+        # Feed the preference agent only when this call actually cancelled
+        # something (idempotent re-cancels should not double-count signals).
+        if had_confirmed_legs:
+            comment = f"trip cancelled: {reason_category}"
+            if reason_note:
+                comment += f" — {reason_note}"
+            self.memory.apply_feedback(
+                updated.user_id,
+                comment=comment,
+                metadata={
+                    "signal": "trip_cancellation",
+                    "trip_id": trip_id,
+                    "category": reason_category,
+                    "note": reason_note or None,
+                    "cancelled_at": _now().isoformat(),
+                },
+            )
+        return updated
 
     def get_preferences(self, user_id: str) -> UserPreferences:
         return self.memory.get_preferences(user_id)

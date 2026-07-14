@@ -2,7 +2,7 @@
 
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
-import type { ConfirmPlanResponse } from "@/models/booking";
+import type { BookingConfirmation, ConfirmPlanResponse } from "@/models/booking";
 import type { DisruptionResponse } from "@/models/disruption";
 import type { ItineraryOption, PlanResponse, ThoughtStep } from "@/models/journey";
 
@@ -17,6 +17,7 @@ interface JourneyState {
   setPlan: (plan: PlanResponse) => void;
   selectItinerary: (itineraryId: string) => void;
   setBooking: (booking: ConfirmPlanResponse) => void;
+  updateBookingConfirmation: (confirmation: BookingConfirmation) => void;
   setDisruption: (disruption: DisruptionResponse) => void;
   resetJourney: () => void;
 }
@@ -41,6 +42,12 @@ export const useJourneyStore = create<JourneyState>()(
           booking,
           trace: [...state.trace, ...booking.chain_of_thought],
         })),
+      updateBookingConfirmation: (confirmation) =>
+        set((state) =>
+          state.booking
+            ? { booking: { ...state.booking, booking: confirmation } }
+            : {},
+        ),
       setDisruption: (disruption) =>
         set((state) => ({
           disruption,

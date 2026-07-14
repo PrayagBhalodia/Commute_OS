@@ -31,6 +31,7 @@ from api.schemas import (
     BookingConfirmation,
     BookingRequest,
     CancelLegResult,
+    CancelTripRequest,
     ConfirmPlanRequest,
     ConfirmPlanResponse,
     DisruptionRequest,
@@ -77,7 +78,11 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    # Wildcard origins require credentials to be disabled; the frontend does
+    # not send cookies/credentials, so this yields a clean
+    # `Access-Control-Allow-Origin: *` that every browser accepts from any host
+    # (localhost, 127.0.0.1, or the LAN IP).
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -86,6 +91,15 @@ app.add_middleware(
 # ---------------------------------------------------------------------------
 # Health
 # ---------------------------------------------------------------------------
+
+
+@app.get("/")
+def root() -> dict[str, Any]:
+    return {
+        "service": "dmos-full-os",
+        "docs": "/docs",
+        "health": "/health",
+    }
 
 
 @app.get("/health")
@@ -270,6 +284,30 @@ def get_booking(trip_id: str) -> BookingConfirmation:
 def cancel_booking_leg(trip_id: str, leg_id: str) -> CancelLegResult:
     try:
         return booking_agent.cancel_leg(trip_id=trip_id, leg_id=leg_id)
+    except BookingError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except WalletError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/bookings/{trip_id}/cancel", response_model=BookingConfirmation)
+def cancel_booking(trip_id: str, body: CancelTripRequest) -> BookingConfirmation:
+    """Cancel an entire trip with a required reason.
+
+    Cancels every still-confirmed leg (refunding the wallet for each),
+    persists the structured reason on the booking, and feeds it to the
+    preference agent. Idempotent — legs already cancelled are skipped.
+    """
+    if booking_agent.get_booking(trip_id) is None:
+        raise HTTPException(status_code=404, detail=f"Booking not found: {trip_id}")
+    try:
+        return orchestrator.cancel_trip(
+            trip_id,
+            reason_category=body.reason_category,
+            reason_note=body.reason_note,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except BookingError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except WalletError as exc:

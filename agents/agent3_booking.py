@@ -147,6 +147,7 @@ class BookingAgent:
                     updated_at TEXT NOT NULL,
                     idempotency_key TEXT UNIQUE,
                     goal_context_json TEXT,
+                    cancellation_json TEXT,
                     error TEXT
                 );
 
@@ -167,6 +168,13 @@ class BookingAgent:
                     ON booked_legs(trip_id);
                 """
             )
+            # Migration for databases created before cancellation reasons.
+            try:
+                conn.execute(
+                    "ALTER TABLE bookings ADD COLUMN cancellation_json TEXT"
+                )
+            except sqlite3.OperationalError:
+                pass  # column already exists
             conn.commit()
 
     # ------------------------------------------------------------------
@@ -810,6 +818,71 @@ class BookingAgent:
             wallet_balance_after=balance_after,
             message=f"Leg {leg_id} cancelled; refunded {refund_amount:.2f} INR",
         )
+
+    def cancel_trip(
+        self,
+        trip_id: str,
+        reason_category: Optional[str] = None,
+        reason_note: Optional[str] = None,
+    ) -> BookingConfirmation:
+        """Cancel every still-confirmed leg of a trip and refund the wallet.
+
+        Idempotent — already-cancelled legs are skipped, and the originally
+        recorded cancellation reason is never overwritten by a re-cancel.
+        Returns the updated booking confirmation.
+        """
+        booking = self.get_booking(trip_id)
+        if booking is None:
+            raise BookingError(f"No booking found for trip_id={trip_id}")
+
+        newly_cancelled = 0
+        for lc in booking.leg_confirmations:
+            if lc.status == "confirmed":
+                self.cancel_leg(trip_id, lc.leg_id)
+                newly_cancelled += 1
+
+        if newly_cancelled and reason_category:
+            self._record_cancellation_reason(
+                trip_id, reason_category, reason_note
+            )
+
+        updated = self.get_booking(trip_id)
+        if updated is None:  # pragma: no cover - defensive
+            raise BookingError(f"No booking found for trip_id={trip_id}")
+        return updated
+
+    def _record_cancellation_reason(
+        self,
+        trip_id: str,
+        reason_category: str,
+        reason_note: Optional[str],
+    ) -> None:
+        """Persist the structured cancellation reason on the booking row."""
+        payload = json.dumps(
+            {
+                "category": reason_category,
+                "note": reason_note or None,
+                "trip_id": trip_id,
+                "cancelled_at": utc_now_iso(),
+            }
+        )
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE bookings SET cancellation_json = ? WHERE trip_id = ?",
+                (payload, trip_id),
+            )
+            conn.commit()
+
+    def get_cancellation_reason(self, trip_id: str) -> Optional[dict[str, Any]]:
+        """Return the stored cancellation reason for a trip, if any."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT cancellation_json FROM bookings WHERE trip_id = ?",
+                (trip_id,),
+            ).fetchone()
+        if row is None or not row["cancellation_json"]:
+            return None
+        return json.loads(row["cancellation_json"])
 
     def get_booking(self, trip_id: str) -> Optional[BookingConfirmation]:
         """Load a persisted booking confirmation by trip_id."""

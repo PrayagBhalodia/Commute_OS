@@ -106,16 +106,23 @@ def test_intent_works_with_llm_disabled(tmp_path: Path) -> None:
 def test_intent_llm_fills_missing_destination(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # Force the enrichment path and stub Gemini's structured extraction.
+    # Force the enrichment path and stub Gemini's tool-calling extraction.
+    # The destination must be grounded in the user's own wording or the
+    # hallucination guard discards it.
     monkeypatch.setattr(intent_mod, "gemini_enabled", lambda: True)
     monkeypatch.setattr(
         intent_mod,
-        "generate_json",
-        lambda *a, **k: {"destination": "Cousins House", "purpose": "meeting"},
+        "generate_with_tools",
+        lambda *a, **k: {
+            "text": '{"destination": "cousins house", "purpose": "meeting"}',
+            "tool_calls": [],
+        },
     )
     agent = IntentAgent(memory=UserMemoryStore(db_path=str(tmp_path / "p.db")))
-    result = agent.parse_intent("u2", "please help me get across town early")
-    assert result.goal_context.destination_name == "Cousins House"
+    result = agent.parse_intent(
+        "u2", "please help me get to my cousins house across town early"
+    )
+    assert (result.goal_context.destination_name or "").lower() == "cousins house"
     assert result.goal_context.metadata["llm_used"] is True
     assert "gemini" in result.goal_context.metadata["parsed_by"]
 
@@ -126,7 +133,12 @@ def test_intent_llm_does_not_override_rule_hits(
     # When rules already found a destination, the LLM must not clobber it.
     monkeypatch.setattr(intent_mod, "gemini_enabled", lambda: True)
     monkeypatch.setattr(
-        intent_mod, "generate_json", lambda *a, **k: {"destination": "Somewhere Else"}
+        intent_mod,
+        "generate_with_tools",
+        lambda *a, **k: {
+            "text": '{"destination": "Somewhere Else"}',
+            "tool_calls": [],
+        },
     )
     agent = IntentAgent(memory=UserMemoryStore(db_path=str(tmp_path / "p.db")))
     result = agent.parse_intent("u3", "Interview at Jio Institute tomorrow")

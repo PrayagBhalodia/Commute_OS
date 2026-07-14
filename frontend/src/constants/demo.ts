@@ -19,9 +19,10 @@ export const ASSISTANT_GREETINGS = [
 
 export const DEFAULT_PLAN_FORM = {
   user_id: DEMO_USER_ID,
-  goal_text: DEMO_PROMPT,
-  origin: "Ahmedabad",
-  destination: "Jio Institute",
+  // Start empty: the goal is entered as one natural-language sentence and the
+  // backend intent agent extracts origin/destination from it. No prefilled
+  // example so testers don't have to clear it before typing their own input.
+  goal_text: "",
   return_required: true,
   luggage_count: 1,
   required_buffer_minutes: 60,

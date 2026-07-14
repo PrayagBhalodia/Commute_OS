@@ -22,6 +22,15 @@ body {
   margin: 0;
   background: hsl(var(--background));
   color: hsl(var(--foreground));
+  /* next/font defines --font-geist-sans on <body>, but Tailwind Preflight sets
+     font-family on <html> where that variable is out of scope — so without
+     this the app falls back to the browser default (Times New Roman). Declare
+     the family here, where the variable is in scope, so Geist actually renders. */
+  font-family: var(--font-geist-sans), "Inter", ui-sans-serif, system-ui, sans-serif;
+  /* Soften glyph rendering so text doesn't look sharp/harsh. */
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
 }
 
 button,

@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useMemo, useState } from "react";
 import { ArrowRight, Clock, MapPin, WalletCards } from "lucide-react";
 import { AssistantComposer } from "@/components/assistant/AssistantComposer";
@@ -8,7 +9,7 @@ import { PromptSuggestionChip } from "@/components/assistant/PromptSuggestionChi
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { BackendStatus } from "@/components/shared/Status";
-import { DEFAULT_PLAN_FORM, ASSISTANT_GREETINGS, PROMPT_SUGGESTIONS } from "@/constants/demo";
+import { DEFAULT_PLAN_FORM, DEMO_PROMPT, ASSISTANT_GREETINGS, PROMPT_SUGGESTIONS } from "@/constants/demo";
 import { useJourneyController, usePreferencesController } from "@/controllers/journey-controller";
 import { useWalletController } from "@/controllers/wallet-controller";
 import { useHealth } from "@/hooks/use-health";
@@ -16,7 +17,8 @@ import { formatInr } from "@/lib/utils";
 import { useJourneyStore } from "@/store/journey-store";
 
 export default function HomePage() {
-  const [prompt, setPrompt] = useState(DEFAULT_PLAN_FORM.goal_text);
+  const [prompt, setPrompt] = useState("");
+  const router = useRouter();
   const { planMutation } = useJourneyController();
   const userId = useJourneyStore((state) => state.userId);
   const plan = useJourneyStore((state) => state.activePlan);
@@ -25,8 +27,21 @@ export default function HomePage() {
   const health = useHealth();
   const greeting = useMemo(() => ASSISTANT_GREETINGS[new Date().getMinutes() % ASSISTANT_GREETINGS.length], []);
 
+  function runPlan(payload: Parameters<typeof planMutation.mutate>[0]) {
+    planMutation.mutate(payload, { onSuccess: () => router.push("/plan") });
+  }
+
+  // Free-text goal: let the backend's intent agent extract origin/destination
+  // from the sentence instead of forcing the hardcoded demo route.
   function submit() {
-    planMutation.mutate({ ...DEFAULT_PLAN_FORM, user_id: userId, goal_text: prompt });
+    if (prompt.trim().length < 8) return;
+    runPlan({ user_id: userId, goal_text: prompt.trim(), max_options: 3 });
+  }
+
+  // Demo scenario: send the fully structured request so it always resolves.
+  function loadDemo() {
+    setPrompt(DEMO_PROMPT);
+    runPlan({ ...DEFAULT_PLAN_FORM, user_id: userId, goal_text: DEMO_PROMPT });
   }
 
   return (
@@ -46,7 +61,7 @@ export default function HomePage() {
           ))}
         </div>
         <div className="flex flex-wrap gap-3">
-          <Button onClick={submit} disabled={planMutation.isPending}>
+          <Button onClick={loadDemo} disabled={planMutation.isPending}>
             Load demo scenario <ArrowRight className="h-4 w-4" />
           </Button>
           {plan ? (

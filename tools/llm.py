@@ -21,7 +21,7 @@ from __future__ import annotations
 import json
 import os
 import re
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 try:  # pragma: no cover - import guard
     import google.generativeai as genai
@@ -139,9 +139,131 @@ def generate_text(
         return None
 
 
+def extract_json(text: str) -> Optional[dict[str, Any]]:
+    """Public helper: best-effort parse of a JSON object from model text."""
+    return _extract_json(text)
+
+
+# ---------------------------------------------------------------------------
+# Function calling (manual loop)
+# ---------------------------------------------------------------------------
+
+
+def _proto_val(v: Any) -> Any:
+    """Convert a proto arg value into a plain Python value."""
+    try:
+        if hasattr(v, "items"):  # MapComposite
+            return {k: _proto_val(x) for k, x in v.items()}
+        if isinstance(v, (list, tuple)) or (
+            hasattr(v, "__iter__") and not isinstance(v, (str, bytes))
+        ):
+            return [_proto_val(x) for x in v]
+    except Exception:  # noqa: BLE001
+        pass
+    return v
+
+
+def _function_calls(resp: Any) -> list[Any]:
+    """Return the function_call protos present in a response, if any."""
+    out: list[Any] = []
+    try:
+        for cand in resp.candidates:
+            for part in cand.content.parts:
+                fc = getattr(part, "function_call", None)
+                if fc and getattr(fc, "name", ""):
+                    out.append(fc)
+    except Exception:  # noqa: BLE001
+        pass
+    return out
+
+
+def _response_text(resp: Any) -> str:
+    """Concatenate text parts without triggering the raising ``.text`` property."""
+    chunks: list[str] = []
+    try:
+        for cand in resp.candidates:
+            for part in cand.content.parts:
+                t = getattr(part, "text", "")
+                if t:
+                    chunks.append(t)
+    except Exception:  # noqa: BLE001
+        pass
+    return "".join(chunks).strip()
+
+
+def generate_with_tools(
+    prompt: str,
+    *,
+    tools: list[Callable[..., Any]],
+    system: Optional[str] = None,
+    temperature: float = 0.1,
+    max_tool_rounds: int = 6,
+) -> Optional[dict[str, Any]]:
+    """Run a Gemini function-calling loop over the given Python tools.
+
+    ``tools`` is a list of plain Python callables; the SDK derives each
+    function-declaration schema from the callable's signature and docstring.
+    Automatic function calling is disabled so we drive the loop manually and
+    can report which tools the model invoked.
+
+    Returns ``{"text": <final model text>, "tool_calls": [<names>]}`` or
+    ``None`` if Gemini is unavailable or anything fails, so callers keep their
+    deterministic fallback.
+    """
+    if not _ensure_configured():
+        return None
+    try:
+        impls: dict[str, Callable[..., Any]] = {fn.__name__: fn for fn in tools}
+        model = genai.GenerativeModel(
+            gemini_model_name(),
+            system_instruction=system,
+            tools=tools,
+            generation_config={"temperature": temperature},
+        )
+        chat = model.start_chat(enable_automatic_function_calling=False)
+        resp = chat.send_message(prompt)
+        tool_calls: list[str] = []
+
+        for _ in range(max_tool_rounds):
+            calls = _function_calls(resp)
+            if not calls:
+                break
+            reply_parts = []
+            for fc in calls:
+                name = fc.name
+                args = {k: _proto_val(v) for k, v in fc.args.items()} if getattr(fc, "args", None) else {}
+                tool_calls.append(name)
+                impl = impls.get(name)
+                if impl is None:
+                    result: Any = {"error": f"unknown tool {name}"}
+                else:
+                    try:
+                        result = impl(**args)
+                    except Exception as exc:  # noqa: BLE001
+                        result = {"error": str(exc)}
+                reply_parts.append(
+                    genai.protos.Part(
+                        function_response=genai.protos.FunctionResponse(
+                            name=name,
+                            response={"result": result},
+                        )
+                    )
+                )
+            resp = chat.send_message(genai.protos.Content(parts=reply_parts))
+
+        text = _response_text(resp)
+        if not text:
+            return None
+        return {"text": text, "tool_calls": tool_calls}
+    except Exception:  # noqa: BLE001
+        return None
+
+
 __all__ = [
     "gemini_enabled",
     "gemini_model_name",
     "generate_json",
     "generate_text",
+    "generate_with_tools",
+    "extract_json",
 ]

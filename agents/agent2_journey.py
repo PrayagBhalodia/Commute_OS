@@ -175,6 +175,16 @@ class JourneyCompositionAgent:
                 opt.explanation = "Premium comfort-oriented option (Air India + Uber)."
                 options.append(opt)
 
+        # Guarantee at least two options to compare. Short local hops often
+        # yield only a cab-only route; synthesize a premium variant so the user
+        # always has a genuine choice.
+        if len(options) == 1:
+            options.append(self._premium_variant(options[0]))
+            reasoning.append(
+                "Only one route was viable; added a premium comfort variant "
+                "so at least two options are offered."
+            )
+
         # Return legs if needed
         if goal.return_required:
             enriched: list[ItineraryOption] = []
@@ -188,7 +198,8 @@ class JourneyCompositionAgent:
         # Score & rank
         scored = [self._score(opt, preferences) for opt in options]
         scored.sort(key=lambda x: x.score, reverse=True)
-        scored = scored[: max(1, max_options)]
+        # Always surface at least two options for comparison when available.
+        scored = scored[: max(2, max_options)]
         reasoning.append(
             "Ranked itineraries by preference-weighted score: "
             + ", ".join(f"{s.itinerary_id}={s.score:.2f}" for s in scored)
@@ -207,6 +218,42 @@ class JourneyCompositionAgent:
     # ------------------------------------------------------------------
     # Builders
     # ------------------------------------------------------------------
+
+    def _premium_variant(self, opt: ItineraryOption) -> ItineraryOption:
+        """Clone an itinerary as an upgraded-comfort alternative — same route,
+        premium operators, a bit pricier — so there are always >= 2 options.
+        """
+        premium_ops = {
+            TransportMode.CAB: "Uber",
+            TransportMode.FLIGHT: "Air India",
+        }
+        legs = [
+            LegOption(
+                leg_id=f"{lg.leg_id}-prem-{uuid.uuid4().hex[:4]}",
+                mode=lg.mode,
+                operator=premium_ops.get(lg.mode, lg.operator),
+                origin=lg.origin,
+                destination=lg.destination,
+                departure=lg.departure,
+                arrival=lg.arrival,
+                price=round(lg.price * 1.25, 2),
+                comfort_score=min(1.0, lg.comfort_score + 0.2),
+                service_id=lg.service_id,
+                metadata={**lg.metadata, "variant": "premium"},
+            )
+            for lg in opt.legs
+        ]
+        return ItineraryOption(
+            itinerary_id=f"{opt.itinerary_id}-prem",
+            trip_id=opt.trip_id,
+            goal_context=opt.goal_context,
+            legs=legs,
+            total_price=round(sum(lg.price for lg in legs), 2),
+            total_duration_minutes=opt.total_duration_minutes,
+            score=0.0,
+            explanation="Premium comfort variant — same route, upgraded operators.",
+            metadata={**opt.metadata, "strategy": "premium_variant", "tag": "comfort"},
+        )
 
     def _build_cab_only(
         self,

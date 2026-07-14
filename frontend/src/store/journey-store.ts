@@ -5,10 +5,16 @@ import { persist } from "zustand/middleware";
 import type { BookingConfirmation, ConfirmPlanResponse } from "@/models/booking";
 import type { DisruptionResponse } from "@/models/disruption";
 import type { ItineraryOption, PlanResponse, ThoughtStep } from "@/models/journey";
+import type { TripPriority } from "@/lib/priority";
 
 interface JourneyState {
   userId: string;
   goalText: string;
+  /** Active optimisation lens; drives ranking + replans. */
+  priority: TripPriority;
+  /** Captured from the date/time modal (local ISO, e.g. "2026-07-20T09:00"). */
+  startDateTime?: string;
+  returnDateTime?: string;
   activePlan?: PlanResponse;
   selectedItineraryId?: string;
   booking?: ConfirmPlanResponse;
@@ -16,6 +22,8 @@ interface JourneyState {
   trace: ThoughtStep[];
   setUserId: (userId: string) => void;
   setGoalText: (goalText: string) => void;
+  setPriority: (priority: TripPriority) => void;
+  setSchedule: (schedule: { startDateTime?: string; returnDateTime?: string }) => void;
   setPlan: (plan: PlanResponse) => void;
   selectItinerary: (itineraryId: string) => void;
   setBooking: (booking: ConfirmPlanResponse) => void;
@@ -29,9 +37,12 @@ export const useJourneyStore = create<JourneyState>()(
     (set) => ({
       userId: "user-demo",
       goalText: "",
+      priority: "time",
       trace: [],
       setUserId: (userId) => set({ userId }),
       setGoalText: (goalText) => set({ goalText }),
+      setPriority: (priority) => set({ priority }),
+      setSchedule: ({ startDateTime, returnDateTime }) => set({ startDateTime, returnDateTime }),
       setPlan: (plan) =>
         set({
           activePlan: plan,

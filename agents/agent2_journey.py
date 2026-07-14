@@ -21,7 +21,7 @@ from api.schemas import (
 )
 from tools import mock_cab_api, mock_flight_api, mock_transit_api
 from tools.llm import gemini_enabled, generate_text
-from tools.maps_api import directions_summary, distance_matrix, resolve_origin_destination
+from tools.maps_api import directions_summary, distance_matrix, haversine_km, resolve_origin_destination
 from tools.places_india import nearest_airport
 
 
@@ -277,8 +277,18 @@ class JourneyCompositionAgent:
         # Leg times working backwards from arrive_by
         dm_last = distance_matrix(d_apt, destination, mode="driving")
         cab2_min = max(25.0, float(dm_last["duration_minutes"]))
-        flt_dist = distance_matrix(o_apt, d_apt)["distance_km"]
-        flight_min = 95.0 if flt_dist < 900 else 150.0
+        # Great-circle distance between airports drives a realistic flight block
+        # time: ~800 km/h cruise plus a fixed allowance for taxi, take-off,
+        # climb, descent and taxi-in. (Driving distance would over- or
+        # under-state a long-haul hop like Ahmedabad → Tokyo.)
+        flt_dist = haversine_km(
+            float(o_apt["lat"]), float(o_apt["lng"]),
+            float(d_apt["lat"]), float(d_apt["lng"]),
+        )
+        flight_min = 45.0 + (flt_dist / 800.0) * 60.0
+        # Long-haul / international hops need a longer check-in + immigration
+        # allowance than a short domestic hop.
+        checkin_min = 150.0 if flt_dist > 2000 else 90.0
         dm_first = distance_matrix(origin, o_apt, mode="driving")
         cab1_min = max(25.0, float(dm_first["duration_minutes"]))
 
@@ -286,7 +296,7 @@ class JourneyCompositionAgent:
         dep_cab2 = arr_dest - timedelta(minutes=cab2_min)
         arr_flight = dep_cab2 - timedelta(minutes=20)  # deplane buffer
         dep_flight = arr_flight - timedelta(minutes=flight_min)
-        arr_cab1 = dep_flight - timedelta(minutes=90)  # airport buffer
+        arr_cab1 = dep_flight - timedelta(minutes=checkin_min)  # airport buffer
         dep_cab1 = arr_cab1 - timedelta(minutes=cab1_min)
 
         q1 = mock_cab_api.get_cab_quotes(

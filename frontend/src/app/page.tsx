@@ -14,6 +14,7 @@ import { useJourneyController, usePreferencesController } from "@/controllers/jo
 import { useWalletController } from "@/controllers/wallet-controller";
 import { useHealth } from "@/hooks/use-health";
 import { formatInr } from "@/lib/utils";
+import { getStoredToken } from "@/services/auth-service";
 import { useJourneyStore } from "@/store/journey-store";
 
 export default function HomePage() {
@@ -34,12 +35,20 @@ export default function HomePage() {
   // Free-text goal: let the backend's intent agent extract origin/destination
   // from the sentence instead of forcing the hardcoded demo route.
   function submit() {
+    if (!getStoredToken()) {
+      router.push("/auth?next=/");
+      return;
+    }
     if (prompt.trim().length < 8) return;
     runPlan({ user_id: userId, goal_text: prompt.trim(), max_options: 3 });
   }
 
   // Demo scenario: send the fully structured request so it always resolves.
   function loadDemo() {
+    if (!getStoredToken()) {
+      router.push("/auth?next=/");
+      return;
+    }
     setPrompt(DEMO_PROMPT);
     runPlan({ ...DEFAULT_PLAN_FORM, user_id: userId, goal_text: DEMO_PROMPT });
   }

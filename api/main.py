@@ -27,6 +27,7 @@ from agents.agent4_wallet import (
     WalletError,
     WalletTransactionError,
 )
+from api.auth import router as auth_router
 from api.schemas import (
     BookingConfirmation,
     BookingRequest,
@@ -86,6 +87,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.include_router(auth_router)
 
 
 # ---------------------------------------------------------------------------
@@ -179,6 +182,13 @@ def os_feedback(body: FeedbackRequest) -> UserPreferences:
 @app.get("/os/preferences/{user_id}", response_model=UserPreferences)
 def os_preferences(user_id: str) -> UserPreferences:
     return orchestrator.get_preferences(user_id)
+
+
+@app.put("/os/preferences/{user_id}", response_model=UserPreferences)
+def os_update_preferences(user_id: str, body: UserPreferences) -> UserPreferences:
+    """Directly save a user's default preferences (settings menu)."""
+    body.user_id = user_id
+    return orchestrator.memory.save_preferences(body)
 
 
 @app.get("/os/plan/{trip_id}", response_model=PlanResponse)

@@ -233,7 +233,7 @@ def nearest_airport(city_or_place: str | dict[str, Any]) -> Optional[dict[str, A
             return get_place_by_id(apt_id)
     # Fallback: closest airport by haversine from place coords if we have them
     place = city_or_place if isinstance(city_or_place, dict) else resolve_place_name(city)
-    if not place:
+    if not place or place.get("lat") is None or place.get("lng") is None:
         return get_place_by_id("in-del-apt")
 
     airports = [p for p in INDIA_PLACES if p["place_type"] == "airport"]
@@ -241,4 +241,20 @@ def nearest_airport(city_or_place: str | dict[str, Any]) -> Optional[dict[str, A
         airports,
         key=lambda a: _haversine_km(place["lat"], place["lng"], a["lat"], a["lng"]),
     )
+    # International / remote destinations: the curated catalog only holds Indian
+    # airports, so if the nearest one is implausibly far, don't snap to it.
+    # Treat the destination itself as the air gateway so the itinerary flies to
+    # the correct region instead of a distant Indian airport.
+    if _haversine_km(place["lat"], place["lng"], best["lat"], best["lng"]) > 600:
+        label = place.get("city") or place.get("name") or "Destination"
+        return {
+            "place_id": f"apt-{place.get('place_id', 'custom')}",
+            "name": f"{label} Airport",
+            "address": place.get("address", label),
+            "city": place.get("city") or place.get("name"),
+            "state": place.get("state"),
+            "lat": float(place["lat"]),
+            "lng": float(place["lng"]),
+            "place_type": "airport",
+        }
     return dict(best)

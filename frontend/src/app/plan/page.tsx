@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useEffect } from "react";
 import { useForm } from "react-hook-form";
 import { toast } from "sonner";
 import { ArrowRight, RotateCcw } from "lucide-react";
@@ -9,7 +10,7 @@ import { Input, Textarea } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { EmptyState, ErrorState, LoadingSkeleton } from "@/components/shared/Status";
 import { ExecutionTrace } from "@/components/journey/ExecutionTrace";
-import { JourneyOptionCard, RecommendedJourneyCard } from "@/components/journey/JourneyOptionCard";
+import { JourneyOptionCard } from "@/components/journey/JourneyOptionCard";
 import { DEFAULT_PLAN_FORM } from "@/constants/demo";
 import { useJourneyController } from "@/controllers/journey-controller";
 import { planRequestSchema } from "@/models/journey";
@@ -22,10 +23,17 @@ export default function PlanPage() {
   const selectedId = useJourneyStore((state) => state.selectedItineraryId);
   const selectItinerary = useJourneyStore((state) => state.selectItinerary);
   const trace = useJourneyStore((state) => state.trace);
+  const goalText = useJourneyStore((state) => state.goalText);
   const selected = getSelectedItinerary(plan, selectedId);
   const form = useForm<PlanRequest>({
-    defaultValues: DEFAULT_PLAN_FORM,
+    defaultValues: { ...DEFAULT_PLAN_FORM, goal_text: goalText },
   });
+
+  // Carry the prompt entered on the home page (or the last planned goal) into
+  // this page's composer so the user sees the same sentence they submitted.
+  useEffect(() => {
+    if (goalText) form.setValue("goal_text", goalText);
+  }, [goalText, form]);
 
   const submit = form.handleSubmit((values) => {
     const parsed = planRequestSchema.safeParse(values);
@@ -57,8 +65,8 @@ export default function PlanPage() {
                 Return journey
               </label>
               <label className="block text-sm font-medium">Required buffer minutes<Input className="mt-2" type="number" min={0} {...form.register("required_buffer_minutes", { valueAsNumber: true })} /></label>
-              <div className="grid grid-cols-4 gap-2 text-xs text-slate-600">
-                {["Time", "Cost", "Comfort", "Eco"].map((item) => <div key={item} className="rounded-md border border-slate-200 bg-slate-50 p-2 text-center">{item}</div>)}
+              <div className="grid grid-cols-3 gap-2 text-xs text-slate-600">
+                {["Time", "Cost", "Comfort"].map((item) => <div key={item} className="rounded-md border border-slate-200 bg-slate-50 p-2 text-center">{item}</div>)}
               </div>
               {Object.values(form.formState.errors)[0]?.message ? <ErrorState message={String(Object.values(form.formState.errors)[0]?.message)} /> : null}
               <Button type="submit" disabled={planMutation.isPending} className="w-full">
@@ -92,7 +100,6 @@ export default function PlanPage() {
                 </div>
               ) : null}
             </div>
-            {selected ? <RecommendedJourneyCard itinerary={selected} /> : null}
             <div className="grid gap-4">
               {plan.itineraries.map((itinerary, index) => (
                 <JourneyOptionCard

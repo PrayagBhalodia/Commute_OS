@@ -40,6 +40,9 @@ _NOMINATIM_BASE = os.environ.get(
 _NOMINATIM_UA = os.environ.get(
     "NOMINATIM_USER_AGENT", "DMOS-CommuteSuperapp/1.0 (contact: set NOMINATIM_USER_AGENT)"
 )
+# Return place names in English (romanised) rather than the local script, so an
+# international destination like "Japan" reads as "Japan" instead of "日本".
+_NOMINATIM_LANG = os.environ.get("NOMINATIM_LANGUAGE", "en").strip() or "en"
 # Simple process-wide cache to respect the ~1 req/sec rate limit.
 _geo_cache: dict[str, Optional[dict[str, Any]]] = {}
 _geo_lock = threading.Lock()
@@ -104,13 +107,20 @@ def _nominatim_search(query: str) -> Optional[dict[str, Any]]:
             return _geo_cache[key]
     result: Optional[dict[str, Any]] = None
     try:
-        params = {
+        params: dict[str, Any] = {
             "q": query,
             "format": "jsonv2",
             "limit": 5,
             "addressdetails": 1,
-            "countrycodes": "in",
         }
+        # Geocode worldwide by default so international destinations (e.g.
+        # "Japan") resolve to the real country rather than a same-named place
+        # inside India. Set NOMINATIM_COUNTRYCODES (comma-separated ISO codes,
+        # e.g. "in") to restrict the search back to specific countries.
+        _cc = os.environ.get("NOMINATIM_COUNTRYCODES", "").strip()
+        if _cc:
+            params["countrycodes"] = _cc
+        params["accept-language"] = _NOMINATIM_LANG
         with httpx.Client(timeout=8.0, headers={"User-Agent": _NOMINATIM_UA}) as client:
             resp = client.get(f"{_NOMINATIM_BASE}/search", params=params)
             data = resp.json()
@@ -144,7 +154,13 @@ def _nominatim_reverse(lat: float, lng: float) -> Optional[dict[str, Any]]:
             return _geo_cache[key]
     result: Optional[dict[str, Any]] = None
     try:
-        params = {"lat": lat, "lon": lng, "format": "jsonv2", "addressdetails": 1}
+        params = {
+            "lat": lat,
+            "lon": lng,
+            "format": "jsonv2",
+            "addressdetails": 1,
+            "accept-language": _NOMINATIM_LANG,
+        }
         with httpx.Client(timeout=8.0, headers={"User-Agent": _NOMINATIM_UA}) as client:
             resp = client.get(f"{_NOMINATIM_BASE}/reverse", params=params)
             data = resp.json()

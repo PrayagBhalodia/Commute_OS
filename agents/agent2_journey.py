@@ -238,7 +238,6 @@ class JourneyCompositionAgent:
             arrival=dep + timedelta(minutes=duration),
             price=round(price, 2),
             comfort_score=0.65,
-            emission_kg=round(dm["distance_km"] * 0.12, 2),
             service_id="CAB-SVC-OLA",
             metadata={"duration_min": duration, **_geo(o, d)},
         )
@@ -249,7 +248,6 @@ class JourneyCompositionAgent:
             legs=[leg],
             total_price=leg.price,
             total_duration_minutes=duration,
-            total_emission_kg=leg.emission_kg,
             score=0.0,
             explanation="Door-to-door cab — simplest local option.",
             metadata={"strategy": "cab_only", "tag": tag},
@@ -323,7 +321,6 @@ class JourneyCompositionAgent:
                 arrival=arr_cab1,
                 price=round(p1, 2),
                 comfort_score=0.7 if cab_operator == "Uber" else 0.65,
-                emission_kg=round(dm_first["distance_km"] * 0.12, 2),
                 metadata=_geo(o, o_apt),
             ),
             LegOption(
@@ -336,7 +333,6 @@ class JourneyCompositionAgent:
                 arrival=arr_flight,
                 price=round(pf, 2),
                 comfort_score=0.9 if operator == "Air India" else 0.8,
-                emission_kg=round(flt_dist * 0.15, 2),
                 service_id=f"FLT-{operator[:3].upper()}",
                 metadata=_geo(o_apt, d_apt),
             ),
@@ -350,13 +346,11 @@ class JourneyCompositionAgent:
                 arrival=arr_dest,
                 price=round(p2, 2),
                 comfort_score=0.75,
-                emission_kg=round(dm_last["distance_km"] * 0.12, 2),
                 metadata=_geo(d_apt, d),
             ),
         ]
         total_price = sum(lg.price for lg in legs)
         total_dur = (arr_dest - dep_cab1).total_seconds() / 60.0
-        total_em = sum(lg.emission_kg or 0 for lg in legs)
         return ItineraryOption(
             itinerary_id=f"itin-flt-{tag}-{uuid.uuid4().hex[:6]}",
             trip_id=trip_id,
@@ -364,7 +358,6 @@ class JourneyCompositionAgent:
             legs=legs,
             total_price=round(total_price, 2),
             total_duration_minutes=round(total_dur, 1),
-            total_emission_kg=round(total_em, 2),
             score=0.0,
             explanation=(
                 f"Multi-leg: cab → {operator} flight → cab. "
@@ -416,7 +409,6 @@ class JourneyCompositionAgent:
                 arrival=arr_cab1,
                 price=cab_price,
                 comfort_score=0.6,
-                emission_kg=4.0,
                 metadata=_geo(o, o),
             ),
             LegOption(
@@ -429,7 +421,6 @@ class JourneyCompositionAgent:
                 arrival=arr_train,
                 price=round(train_price, 2),
                 comfort_score=0.55,
-                emission_kg=round(dist * 0.04, 2),
                 metadata=_geo(o, d),
             ),
             LegOption(
@@ -442,7 +433,6 @@ class JourneyCompositionAgent:
                 arrival=arr,
                 price=cab_price,
                 comfort_score=0.6,
-                emission_kg=4.0,
                 metadata=_geo(d, d),
             ),
         ]
@@ -455,7 +445,6 @@ class JourneyCompositionAgent:
             legs=legs,
             total_price=round(total_price, 2),
             total_duration_minutes=round(total_dur, 1),
-            total_emission_kg=sum(lg.emission_kg or 0 for lg in legs),
             score=0.0,
             explanation="Economy rail option with first/last-mile cabs.",
             metadata={"strategy": "train_chain", "tag": tag},
@@ -499,7 +488,6 @@ class JourneyCompositionAgent:
                 arrival=t + timedelta(minutes=dur),
                 price=round(leg.price * 0.98, 2),
                 comfort_score=leg.comfort_score,
-                emission_kg=leg.emission_kg,
                 metadata={"direction": "return", **reversed_geo},
             )
             ret_legs.append(new_leg)
@@ -515,9 +503,6 @@ class JourneyCompositionAgent:
             total_duration_minutes=round(
                 (all_legs[-1].arrival - all_legs[0].departure).total_seconds() / 60.0, 1
             ),
-            total_emission_kg=round(
-                sum(lg.emission_kg or 0 for lg in all_legs), 2
-            ),
             score=0.0,
             explanation=opt.explanation + " Includes return journey.",
             metadata={**opt.metadata, "return": True},
@@ -528,8 +513,6 @@ class JourneyCompositionAgent:
         price_score = max(0.0, 1.0 - opt.total_price / 15000.0)
         time_score = max(0.0, 1.0 - opt.total_duration_minutes / 1200.0)
         comfort = sum(lg.comfort_score for lg in opt.legs) / len(opt.legs)
-        emission = opt.total_emission_kg or 50.0
-        eco_score = max(0.0, 1.0 - emission / 200.0)
 
         modes = {lg.mode.value for lg in opt.legs}
         mode_bonus = 0.0
@@ -543,13 +526,11 @@ class JourneyCompositionAgent:
         w_price = 0.45 if prefs.prefer_cheapest else 0.2
         w_time = 0.45 if prefs.prefer_fastest else 0.25
         w_comfort = 0.35 if prefs.prefer_comfort else 0.15
-        w_eco = 0.3 if prefs.prefer_low_emission else 0.1
-        total_w = w_price + w_time + w_comfort + w_eco
+        total_w = w_price + w_time + w_comfort
         score = (
             w_price * price_score
             + w_time * time_score
             + w_comfort * comfort
-            + w_eco * eco_score
         ) / total_w + mode_bonus
         if prefs.max_budget_inr and opt.total_price > prefs.max_budget_inr:
             score -= 0.3
@@ -561,7 +542,6 @@ class JourneyCompositionAgent:
                 "price": round(price_score, 3),
                 "time": round(time_score, 3),
                 "comfort": round(comfort, 3),
-                "eco": round(eco_score, 3),
                 "mode_bonus": round(mode_bonus, 3),
             },
         }
@@ -586,7 +566,6 @@ class JourneyCompositionAgent:
                 (prefs.prefer_cheapest, "cheapest"),
                 (prefs.prefer_fastest, "fastest"),
                 (prefs.prefer_comfort, "comfort"),
-                (prefs.prefer_low_emission, "low-emission"),
             )
             if flag
         ) or "balanced"
@@ -598,8 +577,7 @@ class JourneyCompositionAgent:
             f"Traveller preference: {prefs_summary}\n"
             f"Recommended route: {modes}, "
             f"total ₹{top.total_price:.0f}, "
-            f"{top.total_duration_minutes:.0f} min, "
-            f"~{(top.total_emission_kg or 0):.0f} kg CO2."
+            f"{top.total_duration_minutes:.0f} min."
         )
         return generate_text(prompt, temperature=0.4)
 

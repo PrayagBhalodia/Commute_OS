@@ -107,7 +107,6 @@ def main() -> None:
         arrival=dep_home + timedelta(minutes=50),
         price=450.0,
         comfort_score=0.7,
-        emission_kg=3.2,
         service_id="CAB-SVC-OLA",
         metadata={"luggage": 1},
     )
@@ -121,7 +120,6 @@ def main() -> None:
         arrival=dep_home + timedelta(hours=3, minutes=35),
         price=4200.0,
         comfort_score=0.85,
-        emission_kg=88.0,
         service_id="FLT-6E-204",
         metadata={},
     )
@@ -135,7 +133,6 @@ def main() -> None:
         arrival=dep_home + timedelta(hours=5, minutes=10),
         price=850.0,
         comfort_score=0.75,
-        emission_kg=5.5,
         service_id="CAB-SVC-UBR",
         metadata={},
     )
@@ -149,7 +146,6 @@ def main() -> None:
         legs=legs,
         total_price=total_price,
         total_duration_minutes=310.0,
-        total_emission_kg=96.7,
         score=0.92,
         explanation=(
             "Outbound legs for interview at Jio Institute with 60 min buffer; "

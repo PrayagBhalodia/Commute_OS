@@ -5,8 +5,8 @@ loads learned user preferences, and records missing fields for HITL.
 
 A deterministic rule-based parser always runs and is fully sufficient offline.
 When Gemini is configured (GEMINI_API_KEY), an optional LLM pass enriches the
-result — filling fields the rules missed and boosting confidence — without
-changing the public contract or removing the deterministic fallback.
+result — filling fields the rules missed — without changing the public
+contract or removing the deterministic fallback.
 """
 
 from __future__ import annotations
@@ -329,9 +329,6 @@ class IntentAgent:
         if any(w in lower for w in ("comfort", "business class", "premium")):
             prefs.prefer_comfort = True
             reasoning.append("User signal: prefer comfort.")
-        if any(w in lower for w in ("eco", "green", "low emission", "sustainable")):
-            prefs.prefer_low_emission = True
-            reasoning.append("User signal: prefer low emission.")
 
         # --- Optional LLM enrichment (fills gaps only; never overrides rules) ---
         llm_used = False
@@ -409,17 +406,6 @@ class IntentAgent:
         if not origin and not origin_hint and prefs.home_label is None:
             missing.append("origin")
 
-        confidence = 0.55
-        if dest:
-            confidence += 0.2
-        if origin:
-            confidence += 0.1
-        if purpose != "general":
-            confidence += 0.1
-        if llm_used:
-            confidence += 0.05
-        confidence = min(0.97, confidence)
-
         self.memory.record_event(
             user_id,
             "intent_parse",
@@ -440,7 +426,6 @@ class IntentAgent:
             origin_hint=origin,
             destination_hint=dest,
             preferences=prefs,
-            confidence=confidence,
             reasoning=reasoning,
             missing_fields=missing,
         )

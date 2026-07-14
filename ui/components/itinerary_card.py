@@ -11,10 +11,9 @@ def itinerary_summary(itin: dict[str, Any]) -> str:
         f"{lg.get('mode', '?')}({lg.get('operator', '?')})" for lg in legs
     )
     return (
-        f"**{itin.get('itinerary_id')}** · score {itin.get('score', 0):.2f}\n\n"
+        f"**{itin.get('itinerary_id')}**\n\n"
         f"₹{itin.get('total_price', 0):.0f} · "
-        f"{itin.get('total_duration_minutes', 0):.0f} min · "
-        f"{itin.get('total_emission_kg') or 0:.0f} kg CO₂e\n\n"
+        f"{itin.get('total_duration_minutes', 0):.0f} min\n\n"
         f"{modes}\n\n"
         f"_{itin.get('explanation', '')}_"
     )

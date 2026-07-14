@@ -179,8 +179,6 @@ class UserMemoryStore:
                 prefs.prefer_fastest = True
             if "comfort" in c or "business" in c:
                 prefs.prefer_comfort = True
-            if "green" in c or "emission" in c or "eco" in c:
-                prefs.prefer_low_emission = True
             if "flight" in c and ("hate" in c or "avoid" in c):
                 if "flight" not in prefs.avoid_modes:
                     prefs.avoid_modes.append("flight")

@@ -62,12 +62,13 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   if (pathname.startsWith("/auth")) {
     return <>{children}</>;
   }
   return (
     <div className="min-h-screen lg:flex">
-      <AppSidebar />
+      <AppSidebar collapsed={sidebarCollapsed} onToggle={() => setSidebarCollapsed((v) => !v)} />
       <div className="min-w-0 flex-1 pb-16 lg:pb-0">
         <TopHeader />
         <main className="mx-auto w-full max-w-7xl px-4 py-6 lg:px-8">

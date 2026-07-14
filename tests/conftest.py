@@ -135,7 +135,6 @@ def multi_leg_itinerary(sample_goal: GoalContext) -> ItineraryOption:
         legs=[leg1, leg2, leg3],
         total_price=total,
         total_duration_minutes=300.0,
-        total_emission_kg=95.0,
         score=0.91,
         explanation="Fastest end-to-end with 60 min buffer",
         metadata={"city_pair": "AMD-BOM"},

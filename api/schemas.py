@@ -47,7 +47,6 @@ class LegOption(BaseModel):
     price: float
     currency: str = "INR"
     comfort_score: float = 0.5
-    emission_kg: Optional[float] = None
     service_id: Optional[str] = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
@@ -81,7 +80,6 @@ class ItineraryOption(BaseModel):
     legs: list[LegOption]
     total_price: float
     total_duration_minutes: float
-    total_emission_kg: Optional[float] = None
     score: float = 0.0
     explanation: str = ""
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -295,7 +293,6 @@ class UserPreferences(BaseModel):
     prefer_cheapest: bool = False
     prefer_fastest: bool = True
     prefer_comfort: bool = False
-    prefer_low_emission: bool = False
     default_buffer_minutes: int = 45
     home_label: Optional[str] = None
     home_lat: Optional[float] = None
@@ -316,7 +313,6 @@ class IntentResult(BaseModel):
     origin_hint: Optional[str] = None
     destination_hint: Optional[str] = None
     preferences: UserPreferences
-    confidence: float = 0.7
     reasoning: list[str] = Field(default_factory=list)
     missing_fields: list[str] = Field(default_factory=list)
 

@@ -37,7 +37,6 @@ export default function PreferencesPage() {
             <p>Preferred modes: {(prefs.data?.preferred_modes ?? []).join(", ") || "cab, flight, metro"}</p>
             <p>Avoided modes: {(prefs.data?.avoid_modes ?? []).join(", ") || "None"}</p>
             <p>Comfort preference: {prefs.data?.prefer_comfort ? "High" : "Standard"}</p>
-            <p>Sustainability: {prefs.data?.prefer_low_emission ? "Prioritized" : "Balanced"}</p>
             <p>Luggage habits: {prefs.data?.luggage_default ?? 0} default bags</p>
           </CardContent>
         </Card>

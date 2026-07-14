@@ -8,12 +8,14 @@ import type { ItineraryOption, PlanResponse, ThoughtStep } from "@/models/journe
 
 interface JourneyState {
   userId: string;
+  goalText: string;
   activePlan?: PlanResponse;
   selectedItineraryId?: string;
   booking?: ConfirmPlanResponse;
   disruption?: DisruptionResponse;
   trace: ThoughtStep[];
   setUserId: (userId: string) => void;
+  setGoalText: (goalText: string) => void;
   setPlan: (plan: PlanResponse) => void;
   selectItinerary: (itineraryId: string) => void;
   setBooking: (booking: ConfirmPlanResponse) => void;
@@ -26,11 +28,14 @@ export const useJourneyStore = create<JourneyState>()(
   persist(
     (set) => ({
       userId: "user-demo",
+      goalText: "",
       trace: [],
       setUserId: (userId) => set({ userId }),
+      setGoalText: (goalText) => set({ goalText }),
       setPlan: (plan) =>
         set({
           activePlan: plan,
+          goalText: plan.intent?.raw_text || "",
           selectedItineraryId: plan.selected_itinerary_id ?? plan.itineraries[0]?.itinerary_id,
           booking: undefined,
           disruption: undefined,

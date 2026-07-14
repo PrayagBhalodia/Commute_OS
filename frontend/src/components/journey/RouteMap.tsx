@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import "leaflet/dist/leaflet.css";
+import "maplibre-gl/dist/maplibre-gl.css";
 import type { ItineraryOption, LegOption, TransportMode } from "@/models/journey";
 
 // Per-mode colour for markers and the connecting line, aligned with the app's
@@ -19,10 +19,15 @@ const ROAD_MODES = new Set<TransportMode>(["cab", "auto", "bus", "metro"]);
 
 type LatLng = { lat: number; lng: number };
 type RoutePoint = LatLng & { label: string; mode?: TransportMode };
-type Line = [number, number];
+type Line = [number, number]; // [lat, lng]
 
-// OSRM road geometry is fetched on demand (on hover); cache so re-hovering the
-// same option doesn't refetch.
+// Force English place labels on OpenMapTiles-schema vector styles, falling back
+// to the Latin transliteration and then the local name when English is absent.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const ENGLISH_LABEL: any = ["coalesce", ["get", "name:en"], ["get", "name:latin"], ["get", "name"]];
+
+// OSRM road geometry is fetched on demand; cache so re-selecting the same
+// option doesn't refetch.
 const geometryCache = new Map<string, Line[]>();
 
 function num(value: unknown): number | null {
@@ -129,77 +134,110 @@ export function RouteMap({ itinerary }: { itinerary: ItineraryOption }) {
 
   useEffect(() => {
     if (!hasRoute || !containerRef.current) return;
-    let map: import("leaflet").Map | null = null;
+    let map: import("maplibre-gl").Map | null = null;
     let cancelled = false;
 
     (async () => {
-      const L = await import("leaflet");
+      const mod = await import("maplibre-gl");
+      const maplibregl = mod.default ?? mod;
       if (cancelled || !containerRef.current) return;
 
-      map = L.map(containerRef.current, {
-        zoomControl: true,
-        scrollWheelZoom: true,
-        doubleClickZoom: true,
-        touchZoom: true,
-        dragging: true,
+      map = new maplibregl.Map({
+        container: containerRef.current,
+        // Free, keyless vector basemap (OpenMapTiles schema) so labels can be
+        // switched to English worldwide.
+        style: "https://tiles.openfreemap.org/styles/liberty",
+        attributionControl: { compact: true },
+        dragRotate: false,
       });
-      L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-        attribution: "&copy; OpenStreetMap",
-        maxZoom: 18,
-      }).addTo(map);
 
-      const bounds: Line[] = [];
-
-      for (const leg of itinerary.legs) {
-        const { from, to } = legEndpoints(leg);
-        if (!from || !to || samePoint(from, to)) continue;
-
-        let geometry: Line[];
-        let dashed = false;
-        let isRoad = false;
-        if (leg.mode === "flight") {
-          geometry = curvedArc(from, to, 0.18); // flights aren't roads — arc them
-          dashed = true;
-        } else if (ROAD_MODES.has(leg.mode)) {
-          geometry = await roadGeometry(from, to); // real road path
-          isRoad = true;
-        } else {
-          geometry = curvedArc(from, to, 0.06); // train and others: gentle curve
-        }
+      map.on("load", () => {
         if (cancelled || !map) return;
+        const m = map;
 
-        L.polyline(geometry, {
-          color: MODE_COLOR[leg.mode] ?? "#0f172a",
-          weight: 4,
-          opacity: 0.85,
-          dashArray: dashed ? "6 8" : undefined,
-          lineJoin: "round",
-          // Keep every bend of the real road; the default simplifies it away at
-          // small map sizes and it looks like a straight line.
-          smoothFactor: isRoad ? 0 : 1,
-        }).addTo(map);
-        bounds.push(...geometry);
-      }
+        // Render every place label in English worldwide.
+        for (const layer of m.getStyle().layers ?? []) {
+          if (layer.type !== "symbol") continue;
+          const layout = layer.layout as Record<string, unknown> | undefined;
+          if (layout && "text-field" in layout) {
+            try {
+              m.setLayoutProperty(layer.id, "text-field", ENGLISH_LABEL);
+            } catch {
+              /* some symbol layers (icons) have no text-field; ignore */
+            }
+          }
+        }
 
-      if (cancelled || !map) return;
+        void (async () => {
+          const bounds = new maplibregl.LngLatBounds();
+          let index = 0;
 
-      points.forEach((point, index) => {
-        const isEndpoint = index === 0 || index === points.length - 1;
-        const color = isEndpoint ? "#0f172a" : MODE_COLOR[point.mode ?? "cab"] ?? "#0f172a";
-        L.circleMarker([point.lat, point.lng], {
-          radius: isEndpoint ? 7 : 5,
-          color: "#ffffff",
-          weight: 2,
-          fillColor: color,
-          fillOpacity: 1,
-        })
-          .addTo(map!)
-          .bindTooltip(point.label, { direction: "top", offset: [0, -6] });
-        bounds.push([point.lat, point.lng]);
+          for (const leg of itinerary.legs) {
+            const { from, to } = legEndpoints(leg);
+            if (!from || !to || samePoint(from, to)) continue;
+
+            let geometry: Line[];
+            let dashed = false;
+            let isRoad = false;
+            if (leg.mode === "flight") {
+              geometry = curvedArc(from, to, 0.18); // flights aren't roads — arc them
+              dashed = true;
+            } else if (ROAD_MODES.has(leg.mode)) {
+              geometry = await roadGeometry(from, to); // real road path
+              isRoad = true;
+            } else {
+              geometry = curvedArc(from, to, 0.06); // train and others: gentle curve
+            }
+            if (cancelled || !map) return;
+
+            const id = `leg-${index++}`;
+            m.addSource(id, {
+              type: "geojson",
+              data: {
+                type: "Feature",
+                properties: {},
+                geometry: { type: "LineString", coordinates: geometry.map(([lat, lng]) => [lng, lat]) },
+              },
+            });
+            m.addLayer({
+              id,
+              type: "line",
+              source: id,
+              layout: { "line-join": "round", "line-cap": "round" },
+              paint: {
+                "line-color": MODE_COLOR[leg.mode] ?? "#0f172a",
+                "line-width": 4,
+                "line-opacity": 0.85,
+                ...(dashed ? { "line-dasharray": [1.5, 1.5] } : {}),
+              },
+            });
+            void isRoad;
+            for (const [lat, lng] of geometry) bounds.extend([lng, lat]);
+          }
+
+          if (cancelled || !map) return;
+
+          points.forEach((point, i) => {
+            const isEndpoint = i === 0 || i === points.length - 1;
+            const color = isEndpoint ? "#0f172a" : MODE_COLOR[point.mode ?? "cab"] ?? "#0f172a";
+            const size = isEndpoint ? 14 : 10;
+            const el = document.createElement("div");
+            el.style.cssText =
+              `width:${size}px;height:${size}px;border-radius:9999px;background:${color};` +
+              "border:2px solid #fff;box-shadow:0 0 0 1px rgba(15,23,42,0.15);cursor:pointer;";
+            const marker = new maplibregl.Marker({ element: el }).setLngLat([point.lng, point.lat]).addTo(m);
+            const popup = new maplibregl.Popup({ closeButton: false, closeOnClick: false, offset: 12 }).setText(point.label);
+            el.addEventListener("mouseenter", () => popup.setLngLat([point.lng, point.lat]).addTo(m));
+            el.addEventListener("mouseleave", () => popup.remove());
+            void marker;
+            bounds.extend([point.lng, point.lat]);
+          });
+
+          if (!cancelled && map && !bounds.isEmpty()) {
+            map.fitBounds(bounds, { padding: 36, duration: 0, maxZoom: 12 });
+          }
+        })();
       });
-
-      if (bounds.length) map.fitBounds(L.latLngBounds(bounds).pad(0.25));
-      setTimeout(() => map?.invalidateSize(), 150);
     })();
 
     return () => {

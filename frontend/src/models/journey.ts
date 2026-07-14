@@ -23,7 +23,6 @@ export interface UserPreferences {
   prefer_cheapest: boolean;
   prefer_fastest: boolean;
   prefer_comfort: boolean;
-  prefer_low_emission: boolean;
   default_buffer_minutes: number;
   home_label?: string | null;
   home_lat?: number | null;
@@ -42,7 +41,6 @@ export interface IntentResult {
   origin_hint?: string | null;
   destination_hint?: string | null;
   preferences: UserPreferences;
-  confidence: number;
   reasoning: string[];
   missing_fields: string[];
 }
@@ -70,7 +68,6 @@ export interface LegOption {
   price: number;
   currency: string;
   comfort_score: number;
-  emission_kg?: number | null;
   service_id?: string | null;
   metadata: Record<string, unknown>;
 }
@@ -82,7 +79,6 @@ export interface ItineraryOption {
   legs: LegOption[];
   total_price: number;
   total_duration_minutes: number;
-  total_emission_kg?: number | null;
   score: number;
   explanation: string;
   metadata: Record<string, unknown>;

@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { ChevronDown, KeyRound, Loader2, LogIn, LogOut, Save, Settings2, UserRound } from "lucide-react";
+import { ChevronUp, KeyRound, Loader2, LogIn, LogOut, Save, Settings2, UserRound } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -24,7 +24,7 @@ import { useJourneyStore } from "@/store/journey-store";
 const MODE_OPTIONS = ["cab", "auto", "metro", "bus", "train", "flight"] as const;
 type JourneyStyle = "fastest" | "cheapest" | "balanced";
 
-export function UserMenu() {
+export function UserMenu({ openUp = false }: { openUp?: boolean } = {}) {
   const [user, setUser] = useState<AuthUser | null>(null);
   const [open, setOpen] = useState(false);
   const [tab, setTab] = useState<"preferences" | "account">("preferences");
@@ -81,11 +81,16 @@ export function UserMenu() {
           {initial}
         </span>
         <span className="hidden max-w-36 truncate sm:block">{user.name || user.email}</span>
-        <ChevronDown className={cn("h-3.5 w-3.5 text-slate-400 transition", open && "rotate-180")} />
+        <ChevronUp className={cn("h-3.5 w-3.5 text-slate-400 transition", open && "rotate-180")} />
       </button>
 
       {open ? (
-        <div className="absolute left-0 top-full z-50 mt-2 w-[22rem] rounded-lg border border-slate-200 bg-white p-4 shadow-soft sm:w-96">
+        <div
+          className={cn(
+            "absolute left-0 z-50 w-[22rem] rounded-lg border border-slate-200 bg-white p-4 shadow-soft sm:w-96",
+            openUp ? "bottom-full mb-2" : "top-full mt-2",
+          )}
+        >
           <div className="flex items-center gap-3 border-b border-slate-100 pb-3">
             <span className="flex h-9 w-9 items-center justify-center rounded-full bg-slate-950 text-sm font-semibold text-white">
               {initial}
@@ -143,7 +148,6 @@ function PreferencesTab({ userId }: { userId: string }) {
   const [modes, setModes] = useState<string[]>([]);
   const [buffer, setBuffer] = useState(45);
   const [luggage, setLuggage] = useState(0);
-  const [lowEmission, setLowEmission] = useState(false);
   const [comfort, setComfort] = useState(false);
   const loadedFor = useRef<string | null>(null);
 
@@ -155,7 +159,6 @@ function PreferencesTab({ userId }: { userId: string }) {
     setModes(data.preferred_modes ?? []);
     setBuffer(data.default_buffer_minutes ?? 45);
     setLuggage(data.luggage_default ?? 0);
-    setLowEmission(Boolean(data.prefer_low_emission));
     setComfort(Boolean(data.prefer_comfort));
   }, [prefsQuery.data]);
 
@@ -186,7 +189,6 @@ function PreferencesTab({ userId }: { userId: string }) {
       preferred_modes: modes,
       default_buffer_minutes: buffer,
       luggage_default: luggage,
-      prefer_low_emission: lowEmission,
       prefer_comfort: comfort,
     });
   }
@@ -241,10 +243,6 @@ function PreferencesTab({ userId }: { userId: string }) {
         <label className="flex cursor-pointer items-center gap-2">
           <input type="checkbox" className="accent-slate-900" checked={comfort} onChange={(e) => setComfort(e.target.checked)} />
           Prefer extra comfort
-        </label>
-        <label className="flex cursor-pointer items-center gap-2">
-          <input type="checkbox" className="accent-slate-900" checked={lowEmission} onChange={(e) => setLowEmission(e.target.checked)} />
-          Prioritise low-emission options
         </label>
       </div>
 

@@ -10,10 +10,11 @@ export function TopHeader() {
     <header className="sticky top-0 z-30 border-b border-slate-200 bg-white/85 px-4 py-3 backdrop-blur lg:px-8">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-4">
-          <UserMenu />
+          <div className="lg:hidden">
+            <UserMenu />
+          </div>
           <div className="hidden md:block">
             <p className="text-sm font-medium text-slate-950">Tell us where you need to be. We&apos;ll take care of the journey.</p>
-            <p className="text-xs text-slate-500">Bookings, payments, and disruptions are simulated.</p>
           </div>
         </div>
         <div className="flex items-center gap-2">

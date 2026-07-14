@@ -1,15 +1,14 @@
 import { Clock3, IndianRupee, MapPinned } from "lucide-react";
 import type { ItineraryOption } from "@/models/journey";
-import { formatInr, formatMinutes, pct } from "@/lib/utils";
+import { formatInr, formatMinutes } from "@/lib/utils";
 
 export function JourneyMetrics({ itinerary }: { itinerary: ItineraryOption }) {
   const arrival = itinerary.legs[itinerary.legs.length - 1]?.arrival;
   return (
-    <dl className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+    <dl className="grid grid-cols-1 gap-3 sm:grid-cols-3">
       <Metric icon={<IndianRupee className="h-4 w-4" />} label="Total" value={formatInr(itinerary.total_price)} />
       <Metric icon={<Clock3 className="h-4 w-4" />} label="Duration" value={formatMinutes(itinerary.total_duration_minutes)} />
       <Metric icon={<MapPinned className="h-4 w-4" />} label="Arrival" value={arrival ? new Date(arrival).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "TBD"} />
-      <Metric icon={<Clock3 className="h-4 w-4" />} label="Reliability" value={pct(itinerary.score)} />
     </dl>
   );
 }

@@ -1,8 +1,8 @@
 """Gemini LLM helper for DMOS.
 
-Optional Google Gemini integration. When GEMINI_API_KEY (or GOOGLE_API_KEY)
-is configured *and* the google-generativeai SDK is installed, agents can call
-Gemini for richer natural-language understanding and planning.
+Optional Google Gemini integration through Google's OpenAI-compatible endpoint.
+When GEMINI_API_KEY (or GOOGLE_API_KEY) is configured, agents can call Gemini
+for richer natural-language understanding and planning.
 
 Every helper degrades gracefully: if the key is missing, the SDK is not
 installed, or the API errors/times out, the functions return ``None`` and the
@@ -12,7 +12,7 @@ to enrich results when available.
 
 Model selection:
     The model id is read from the GEMINI_MODEL env var and defaults to
-    ``gemini-3.5-flash``. Override it (e.g. ``gemini-2.5-flash``) without any
+    ``gemini-2.5-flash``. Override it without any
     code change if your account exposes a different Flash revision.
 """
 
@@ -20,16 +20,14 @@ from __future__ import annotations
 
 import json
 import os
+import inspect
 import re
 from typing import Any, Callable, Optional
 
-try:  # pragma: no cover - import guard
-    import google.generativeai as genai
-except ImportError:  # pragma: no cover
-    genai = None  # type: ignore
+from openai import OpenAI
 
-_DEFAULT_MODEL = "gemini-3.5-flash"
-_configured = False
+_DEFAULT_MODEL = "gemini-2.5-flash"
+_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
 
 
 def _api_key() -> str:
@@ -37,32 +35,37 @@ def _api_key() -> str:
     return (
         os.environ.get("GEMINI_API_KEY")
         or os.environ.get("GOOGLE_API_KEY")
+        or (
+            os.environ.get("LLM_API_KEY")
+            if os.environ.get("LLM_MODEL", "").lower().startswith("gemini")
+            else ""
+        )
         or ""
     ).strip()
 
 
 def gemini_model_name() -> str:
-    """Configured model id (env override), defaulting to gemini-3.5-flash."""
-    return os.environ.get("GEMINI_MODEL", _DEFAULT_MODEL).strip() or _DEFAULT_MODEL
+    """Configured Gemini model id, defaulting to a Flash model."""
+    return (
+        os.environ.get("GEMINI_MODEL")
+        or (
+            os.environ.get("LLM_MODEL")
+            if os.environ.get("LLM_MODEL", "").lower().startswith("gemini")
+            else ""
+        )
+        or _DEFAULT_MODEL
+    ).strip()
 
 
 def gemini_enabled() -> bool:
-    """True when a key is present and the SDK is importable."""
-    return bool(_api_key()) and genai is not None
+    """True when a Gemini API key is present."""
+    return bool(_api_key())
 
 
-def _ensure_configured() -> bool:
-    """Configure the SDK once; return False if Gemini is unavailable."""
-    global _configured
+def _client() -> OpenAI | None:
     if not gemini_enabled():
-        return False
-    if not _configured:
-        try:
-            genai.configure(api_key=_api_key())
-            _configured = True
-        except Exception:  # noqa: BLE001
-            return False
-    return True
+        return None
+    return OpenAI(api_key=_api_key(), base_url=_BASE_URL)
 
 
 def _extract_json(text: str) -> Optional[dict[str, Any]]:
@@ -100,19 +103,21 @@ def generate_json(
     Returns ``None`` if Gemini is disabled or anything fails, so callers can
     treat the result as an optional enrichment.
     """
-    if not _ensure_configured():
+    client = _client()
+    if client is None:
         return None
     try:
-        model = genai.GenerativeModel(
-            gemini_model_name(),
-            system_instruction=system,
-            generation_config={
-                "temperature": temperature,
-                "response_mime_type": "application/json",
-            },
+        response = client.chat.completions.create(
+            model=gemini_model_name(),
+            messages=[
+                *([{"role": "system", "content": system}] if system else []),
+                {"role": "user", "content": prompt},
+            ],
+            temperature=temperature,
+            response_format={"type": "json_object"},
+            timeout=30.0,
         )
-        resp = model.generate_content(prompt)
-        return _extract_json(getattr(resp, "text", "") or "")
+        return _extract_json(response.choices[0].message.content or "")
     except Exception:  # noqa: BLE001
         return None
 
@@ -124,16 +129,20 @@ def generate_text(
     temperature: float = 0.4,
 ) -> Optional[str]:
     """Call Gemini and return plain text, or ``None`` on any failure."""
-    if not _ensure_configured():
+    client = _client()
+    if client is None:
         return None
     try:
-        model = genai.GenerativeModel(
-            gemini_model_name(),
-            system_instruction=system,
-            generation_config={"temperature": temperature},
+        response = client.chat.completions.create(
+            model=gemini_model_name(),
+            messages=[
+                *([{"role": "system", "content": system}] if system else []),
+                {"role": "user", "content": prompt},
+            ],
+            temperature=temperature,
+            timeout=30.0,
         )
-        resp = model.generate_content(prompt)
-        text = (getattr(resp, "text", "") or "").strip()
+        text = (response.choices[0].message.content or "").strip()
         return text or None
     except Exception:  # noqa: BLE001
         return None
@@ -149,46 +158,28 @@ def extract_json(text: str) -> Optional[dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 
-def _proto_val(v: Any) -> Any:
-    """Convert a proto arg value into a plain Python value."""
-    try:
-        if hasattr(v, "items"):  # MapComposite
-            return {k: _proto_val(x) for k, x in v.items()}
-        if isinstance(v, (list, tuple)) or (
-            hasattr(v, "__iter__") and not isinstance(v, (str, bytes))
-        ):
-            return [_proto_val(x) for x in v]
-    except Exception:  # noqa: BLE001
-        pass
-    return v
-
-
-def _function_calls(resp: Any) -> list[Any]:
-    """Return the function_call protos present in a response, if any."""
-    out: list[Any] = []
-    try:
-        for cand in resp.candidates:
-            for part in cand.content.parts:
-                fc = getattr(part, "function_call", None)
-                if fc and getattr(fc, "name", ""):
-                    out.append(fc)
-    except Exception:  # noqa: BLE001
-        pass
-    return out
-
-
-def _response_text(resp: Any) -> str:
-    """Concatenate text parts without triggering the raising ``.text`` property."""
-    chunks: list[str] = []
-    try:
-        for cand in resp.candidates:
-            for part in cand.content.parts:
-                t = getattr(part, "text", "")
-                if t:
-                    chunks.append(t)
-    except Exception:  # noqa: BLE001
-        pass
-    return "".join(chunks).strip()
+def _tool_definition(fn: Callable[..., Any]) -> dict[str, Any]:
+    properties: dict[str, Any] = {}
+    required: list[str] = []
+    for name, parameter in inspect.signature(fn).parameters.items():
+        annotation = parameter.annotation
+        json_type = "number" if annotation in {int, float} else "boolean" if annotation is bool else "string"
+        properties[name] = {"type": json_type}
+        if parameter.default is inspect.Parameter.empty:
+            required.append(name)
+    return {
+        "type": "function",
+        "function": {
+            "name": fn.__name__,
+            "description": inspect.getdoc(fn) or fn.__name__,
+            "parameters": {
+                "type": "object",
+                "properties": properties,
+                "required": required,
+                "additionalProperties": False,
+            },
+        },
+    }
 
 
 def generate_with_tools(
@@ -210,28 +201,35 @@ def generate_with_tools(
     ``None`` if Gemini is unavailable or anything fails, so callers keep their
     deterministic fallback.
     """
-    if not _ensure_configured():
+    client = _client()
+    if client is None:
         return None
     try:
         impls: dict[str, Callable[..., Any]] = {fn.__name__: fn for fn in tools}
-        model = genai.GenerativeModel(
-            gemini_model_name(),
-            system_instruction=system,
-            tools=tools,
-            generation_config={"temperature": temperature},
-        )
-        chat = model.start_chat(enable_automatic_function_calling=False)
-        resp = chat.send_message(prompt)
+        definitions = [_tool_definition(fn) for fn in tools]
+        messages: list[dict[str, Any]] = [
+            *([{"role": "system", "content": system}] if system else []),
+            {"role": "user", "content": prompt},
+        ]
         tool_calls: list[str] = []
-
         for _ in range(max_tool_rounds):
-            calls = _function_calls(resp)
+            response = client.chat.completions.create(
+                model=gemini_model_name(),
+                messages=messages,
+                tools=definitions,
+                tool_choice="auto",
+                temperature=temperature,
+                timeout=30.0,
+            )
+            message = response.choices[0].message
+            calls = message.tool_calls or []
             if not calls:
-                break
-            reply_parts = []
-            for fc in calls:
-                name = fc.name
-                args = {k: _proto_val(v) for k, v in fc.args.items()} if getattr(fc, "args", None) else {}
+                text = (message.content or "").strip()
+                return {"text": text, "tool_calls": tool_calls} if text else None
+            messages.append(message.model_dump(exclude_none=True))
+            for call in calls:
+                name = call.function.name
+                args = json.loads(call.function.arguments or "{}")
                 tool_calls.append(name)
                 impl = impls.get(name)
                 if impl is None:
@@ -241,20 +239,14 @@ def generate_with_tools(
                         result = impl(**args)
                     except Exception as exc:  # noqa: BLE001
                         result = {"error": str(exc)}
-                reply_parts.append(
-                    genai.protos.Part(
-                        function_response=genai.protos.FunctionResponse(
-                            name=name,
-                            response={"result": result},
-                        )
-                    )
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": call.id,
+                        "content": json.dumps({"result": result}, default=str),
+                    }
                 )
-            resp = chat.send_message(genai.protos.Content(parts=reply_parts))
-
-        text = _response_text(resp)
-        if not text:
-            return None
-        return {"text": text, "tool_calls": tool_calls}
+        return None
     except Exception:  # noqa: BLE001
         return None
 

@@ -6,6 +6,7 @@ import { Map } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { EmptyState } from "@/components/shared/Status";
 import { JourneyMetrics } from "@/components/journey/JourneyMetrics";
+import { RouteMap } from "@/components/journey/RouteMap";
 import { JourneyTimeline } from "@/components/journey/JourneyTimeline";
 import { getSelectedItinerary, useJourneyStore } from "@/store/journey-store";
 
@@ -36,8 +37,9 @@ export default function JourneyDetailPage() {
           <CardContent><JourneyTimeline itinerary={itinerary} booking={booking} /></CardContent>
         </Card>
         <Card>
-          <CardHeader><CardTitle className="flex items-center gap-2"><Map className="h-4 w-4" /> Places</CardTitle></CardHeader>
+          <CardHeader><CardTitle className="flex items-center gap-2"><Map className="h-4 w-4" /> Route map</CardTitle></CardHeader>
           <CardContent className="space-y-3 text-sm">
+            <RouteMap itinerary={itinerary} />
             <div className="rounded-md bg-slate-50 p-3">
               <p className="font-medium">{plan.origin.name}</p>
               <p className="text-slate-500">{plan.origin.lat.toFixed(4)}, {plan.origin.lng.toFixed(4)}</p>
@@ -46,7 +48,6 @@ export default function JourneyDetailPage() {
               <p className="font-medium">{plan.destination.name}</p>
               <p className="text-slate-500">{plan.destination.lat.toFixed(4)}, {plan.destination.lng.toFixed(4)}</p>
             </div>
-            <p className="text-slate-500">Map rendering is represented as coordinate placeholders in this prototype UI.</p>
           </CardContent>
         </Card>
       </div>

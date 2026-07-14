@@ -21,6 +21,12 @@ $ErrorActionPreference = 'Stop'
 $root = $PSScriptRoot
 $pidFile = Join-Path $env:TEMP 'dmos_run_pids.txt'
 
+# Sessions opened before Node was installed may not have its PATH entry.
+$nodeDir = 'C:\Program Files\nodejs'
+if (-not (Get-Command npm.cmd -ErrorAction SilentlyContinue) -and (Test-Path (Join-Path $nodeDir 'npm.cmd'))) {
+    $env:Path = "$nodeDir;$env:Path"
+}
+
 function Stop-Servers {
     if (Test-Path $pidFile) {
         foreach ($line in Get-Content $pidFile) {

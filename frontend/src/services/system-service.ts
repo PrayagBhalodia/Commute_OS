@@ -5,6 +5,8 @@ export interface HealthResponse {
   service: string;
   agents: string[];
   google_maps: boolean;
+  maps_provider: "google" | "openstreetmap" | "offline";
+  nominatim: boolean;
 }
 
 export async function getHealth() {

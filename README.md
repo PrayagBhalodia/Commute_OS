@@ -512,3 +512,88 @@ Home → Load demo scenario → Plan options → Select itinerary → Review boo
 ### Simulated Booking and Payment Disclaimer
 
 The frontend is a hackathon prototype client. All bookings, operator references, wallet top-ups, debits, refunds, and reconciliations are simulated through the existing Python backend. No real transport inventory or payment processor is used.
+
+---
+
+## Conversational LLM and Local RAG
+
+DMOS includes a conversational controller above the existing deterministic
+five-agent orchestrator. It collects trip constraints over multiple turns,
+asks for missing origin or destination, plans journeys, explains ranked
+options, answers policy questions with local citations, and coordinates
+approved tools. It never replaces deterministic booking, wallet, refund, or
+reconciliation logic.
+
+### High-level design
+
+~~~text
+Chat client -> ConversationAgent -> strict ToolRegistry -> DMOSOrchestrator
+                         |
+                         +-> OpenAI-compatible LLM (optional)
+                         +-> local Chroma RAG -> Markdown knowledge base
+~~~
+
+See docs/HLD.md for the detailed design, docs/RAG_WORKFLOW.md for ingestion and
+retrieval, and docs/DEMO_SCRIPT.md for an end-to-end demonstration.
+
+### Setup
+
+~~~powershell
+pip install -r requirements.txt
+python -m rag.ingest
+uvicorn api.main:app --reload --host 127.0.0.1 --port 8000
+~~~
+
+The application remains functional when LLM_API_KEY is empty. In that mode,
+the conversational layer uses deterministic extraction and responses.
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| LLM_API_KEY | empty | Enables the OpenAI-compatible provider |
+| LLM_BASE_URL | provider default | Optional compatible API base URL |
+| LLM_MODEL | gpt-4.1-mini | Provider model identifier |
+| LLM_TEMPERATURE | 0.2 | Provider response temperature |
+| RAG_EMBEDDING_MODEL | all-MiniLM-L6-v2 | Local embedding model |
+| RAG_DB_PATH | data/chroma | Persistent Chroma database |
+| RAG_TOP_K | 4 | Default retrieval count |
+| RAG_USE_SENTENCE_TRANSFORMERS | 0 | Enable a cached transformer model |
+| RAG_ALLOW_MODEL_DOWNLOAD | 0 | Explicitly permit model download |
+
+### Chat and RAG API
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| POST | /chat/message | Send a multi-turn chat message |
+| GET | /chat/sessions/{session_id} | Read compact session state |
+| DELETE | /chat/sessions/{session_id} | Delete conversation memory |
+| POST | /rag/search | Search local policy knowledge |
+| POST | /rag/reindex | Idempotently index Markdown documents |
+
+Example:
+
+~~~powershell
+curl.exe -X POST http://127.0.0.1:8000/chat/message ^
+  -H "Content-Type: application/json" ^
+  -d "{\"user_id\":\"demo\",\"message\":\"Plan a trip from Ahmedabad to Jio Institute tomorrow\"}"
+~~~
+
+### Tool registry and approvals
+
+The allowlisted tools are plan_journey, get_wallet_balance, top_up_wallet,
+confirm_booking, trigger_disruption, get_user_preferences, submit_feedback,
+search_knowledge, search_places, and get_operator_catalog. Every input is
+Pydantic-validated. Unknown tools and extra arguments are rejected.
+
+Autonomy defaults to manual. Smart approval allows proactive suggestions but
+still requests approval for consequential actions. Full auto may generate
+disruption alternatives automatically, but booking always requires explicit
+consent. The API returns safe labels such as intent_parsed,
+knowledge_retrieved, journey_planned, waiting_for_consent, and
+booking_confirmed; hidden model reasoning is never returned.
+
+### Limitations
+
+Conversation state and planned trip IDs are process-local. The bundled corpus
+contains durable guidance, not live prices, availability, schedules, traffic,
+or service advisories. An external LLM provider and embedding model download
+are optional. All transport bookings and wallet operations remain simulated.

@@ -214,13 +214,7 @@ def geocode(query: str) -> Optional[dict[str, Any]]:
     if local:
         return {**local, "source": "catalog"}
 
-    # 2. Free OpenStreetMap Nominatim for anything not in the catalog.
-    if nominatim_enabled() and query.strip():
-        nom = _nominatim_search(query)
-        if nom:
-            return {**nom, "source": "nominatim"}
-
-    # 3. Optional Google Geocoding when a key is configured.
+    # 2. Prefer Google Geocoding when a key is configured.
     if google_maps_enabled() and query.strip():
         try:
             url = "https://maps.googleapis.com/maps/api/geocode/json"
@@ -244,8 +238,14 @@ def geocode(query: str) -> Optional[dict[str, Any]]:
                     "metadata": {"google_types": r0.get("types", [])},
                 }
         except Exception:
-            # Fall through to None below.
+            # Fall through to the keyless provider below.
             pass
+
+    # 3. Free OpenStreetMap Nominatim for anything not in the catalog.
+    if nominatim_enabled() and query.strip():
+        nom = _nominatim_search(query)
+        if nom:
+            return {**nom, "source": "nominatim"}
 
     # Last resort: unresolved.
     return None
@@ -264,11 +264,6 @@ def reverse_geocode(lat: float, lng: float) -> dict[str, Any]:
     dist = haversine_km(lat, lng, best["lat"], best["lng"])
     if dist < 25:
         return {**best, "source": "nearest_catalog", "distance_to_match_km": round(dist, 2)}
-
-    if nominatim_enabled():
-        nom = _nominatim_reverse(lat, lng)
-        if nom:
-            return {**nom, "source": "nominatim"}
 
     if google_maps_enabled():
         try:
@@ -292,6 +287,11 @@ def reverse_geocode(lat: float, lng: float) -> dict[str, Any]:
                 }
         except Exception:
             pass
+
+    if nominatim_enabled():
+        nom = _nominatim_reverse(lat, lng)
+        if nom:
+            return {**nom, "source": "nominatim"}
 
     return {
         "place_id": f"custom-{lat:.4f}-{lng:.4f}",

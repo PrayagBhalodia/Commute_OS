@@ -34,7 +34,7 @@ def test_gemini_disabled_without_key(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_gemini_model_name_default_and_override(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("GEMINI_MODEL", raising=False)
-    assert llm.gemini_model_name() == "gemini-3.5-flash"
+    assert llm.gemini_model_name() == "gemini-2.5-flash"
     monkeypatch.setenv("GEMINI_MODEL", "gemini-2.5-flash")
     assert llm.gemini_model_name() == "gemini-2.5-flash"
 

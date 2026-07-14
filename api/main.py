@@ -12,10 +12,17 @@ from __future__ import annotations
 import os
 from typing import Any, Optional
 
+from dotenv import load_dotenv
+
+# Load local configuration before importing providers that read environment
+# settings while their modules initialize.
+load_dotenv()
+
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from api.chat_routes import build_chat_router
 from agents.agent3_booking import (
     BookingConsentRequiredError,
     BookingError,
@@ -48,7 +55,7 @@ from api.schemas import (
     WalletTransaction,
 )
 from orchestration.orchestrator import DMOSOrchestrator
-from tools.maps_api import geocode, google_maps_enabled, reverse_geocode
+from tools.maps_api import geocode, google_maps_enabled, nominatim_enabled, reverse_geocode
 from tools.places_india import list_places
 
 # ---------------------------------------------------------------------------
@@ -78,17 +85,20 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    # Wildcard origins require credentials to be disabled; the frontend does
-    # not send cookies/credentials, so this yields a clean
-    # `Access-Control-Allow-Origin: *` that every browser accepts from any host
-    # (localhost, 127.0.0.1, or the LAN IP).
+    allow_origins=[
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost:8501",
+    ],
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 app.include_router(auth_router)
+chat_router, chat_services = build_chat_router(orchestrator)
+app.include_router(chat_router)
+app.state.chat_services = chat_services
 
 
 # ---------------------------------------------------------------------------
@@ -107,11 +117,16 @@ def root() -> dict[str, Any]:
 
 @app.get("/health")
 def health() -> dict[str, Any]:
+    maps_provider = "google" if google_maps_enabled() else (
+        "openstreetmap" if nominatim_enabled() else "offline"
+    )
     return {
         "status": "ok",
         "service": "dmos-full-os",
         "agents": ["intent", "journey", "booking", "wallet", "disruption"],
         "google_maps": google_maps_enabled(),
+        "maps_provider": maps_provider,
+        "nominatim": nominatim_enabled(),
     }
 
 

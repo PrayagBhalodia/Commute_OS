@@ -38,6 +38,7 @@ from api.schemas import (
     DisruptionResponse,
     FeedbackRequest,
     ItineraryOption,
+    LegOption,
     PlanRequest,
     PlanResponse,
     ThoughtStep,
@@ -636,3 +637,115 @@ class DMOSOrchestrator:
 
     def get_plan(self, trip_id: str) -> Optional[PlanResponse]:
         return self._plans.get(trip_id)
+
+    def get_leg_options(
+        self, trip_id: str, user_id: str, itinerary_id: str
+    ) -> list[dict[str, Any]]:
+        """Return only alternatives that can occupy each route slot safely."""
+        plan = self._plans.get(trip_id)
+        if plan is None or plan.user_id != user_id:
+            raise ValueError("Active journey plan was not found for this user")
+        route = next(
+            (item for item in plan.itineraries if item.itinerary_id == itinerary_id),
+            None,
+        )
+        if route is None:
+            raise ValueError("Selected route is not part of the active plan")
+
+        groups: list[dict[str, Any]] = []
+        for index, base_leg in enumerate(route.legs):
+            previous_arrival = route.legs[index - 1].arrival if index else None
+            next_departure = (
+                route.legs[index + 1].departure
+                if index + 1 < len(route.legs)
+                else None
+            )
+            candidates: list[LegOption] = []
+            seen: set[tuple[Any, ...]] = set()
+            for itinerary in plan.itineraries:
+                for leg in itinerary.legs:
+                    if leg.origin != base_leg.origin or leg.destination != base_leg.destination:
+                        continue
+                    if previous_arrival and leg.departure < previous_arrival:
+                        continue
+                    if next_departure and leg.arrival > next_departure:
+                        continue
+                    signature = (
+                        leg.mode, leg.operator, leg.departure, leg.arrival, leg.price
+                    )
+                    if signature in seen:
+                        continue
+                    seen.add(signature)
+                    candidates.append(leg)
+            candidates.sort(key=lambda leg: (leg.price, leg.arrival, leg.operator))
+            if not any(leg.leg_id == base_leg.leg_id for leg in candidates):
+                candidates.insert(0, base_leg)
+            groups.append(
+                {
+                    "leg_number": index + 1,
+                    "origin": base_leg.origin,
+                    "destination": base_leg.destination,
+                    "default_leg_id": base_leg.leg_id,
+                    "options": [leg.model_dump(mode="json") for leg in candidates],
+                }
+            )
+        return groups
+
+    def compose_selected_legs(
+        self,
+        trip_id: str,
+        user_id: str,
+        route_itinerary_id: str,
+        selected_leg_ids: dict[int, str],
+    ) -> ItineraryOption:
+        """Create a bookable itinerary after validating a per-leg selection."""
+        groups = self.get_leg_options(trip_id, user_id, route_itinerary_id)
+        chosen: list[LegOption] = []
+        for group in groups:
+            number = group["leg_number"]
+            leg_id = selected_leg_ids.get(number, group["default_leg_id"])
+            raw = next(
+                (option for option in group["options"] if option["leg_id"] == leg_id),
+                None,
+            )
+            if raw is None:
+                raise ValueError(f"Leg {number} option is not compatible with this route")
+            chosen.append(LegOption.model_validate(raw))
+
+        for previous, current in zip(chosen, chosen[1:]):
+            if previous.destination != current.origin:
+                raise ValueError("Selected legs do not form a continuous journey")
+            if previous.arrival > current.departure:
+                raise ValueError("Selected legs overlap in time")
+
+        plan = self._plans[trip_id]
+        route = next(
+            item for item in plan.itineraries
+            if item.itinerary_id == route_itinerary_id
+        )
+        composed = ItineraryOption(
+            itinerary_id=f"itin-custom-{uuid.uuid4().hex[:10]}",
+            trip_id=trip_id,
+            goal_context=route.goal_context,
+            legs=chosen,
+            total_price=round(sum(leg.price for leg in chosen), 2),
+            total_duration_minutes=(
+                chosen[-1].arrival - chosen[0].departure
+            ).total_seconds() / 60,
+            score=route.score,
+            explanation="User-composed journey from validated compatible leg options.",
+            metadata={
+                **route.metadata,
+                "route_itinerary_id": route_itinerary_id,
+                "user_composed": True,
+            },
+        )
+        plan.itineraries = [
+            item for item in plan.itineraries
+            if not (
+                item.metadata.get("user_composed")
+                and item.metadata.get("route_itinerary_id") == route_itinerary_id
+            )
+        ] + [composed]
+        plan.selected_itinerary_id = composed.itinerary_id
+        return composed

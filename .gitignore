@@ -36,6 +36,7 @@ htmlcov/
 
 # Runtime databases (created automatically; do not commit)
 data/*.db
+data/chroma/
 *.db
 
 # Logs & OS junk

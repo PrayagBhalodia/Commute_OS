@@ -5,4 +5,8 @@ pytest
 httpx
 streamlit
 pandas
-google-generativeai
+python-dotenv
+chromadb
+sentence-transformers
+openai
+tenacity

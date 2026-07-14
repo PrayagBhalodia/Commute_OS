@@ -4,11 +4,11 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { Clock, MapPin, WalletCards } from "lucide-react";
-import { AssistantComposer } from "@/components/assistant/AssistantComposer";
+import { ConversationalAssistant } from "@/components/assistant/ConversationalAssistant";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { BackendStatus } from "@/components/shared/Status";
 import { ASSISTANT_GREETINGS } from "@/constants/demo";
-import { useJourneyController, usePreferencesController } from "@/controllers/journey-controller";
+import { usePreferencesController } from "@/controllers/journey-controller";
 import { useWalletController } from "@/controllers/wallet-controller";
 import { useHealth } from "@/hooks/use-health";
 import { formatInr } from "@/lib/utils";
@@ -16,11 +16,8 @@ import { getStoredToken } from "@/services/auth-service";
 import { useJourneyStore } from "@/store/journey-store";
 
 export default function HomePage() {
-  const [prompt, setPrompt] = useState("");
   const router = useRouter();
-  const { planMutation } = useJourneyController();
   const userId = useJourneyStore((state) => state.userId);
-  const setGoalText = useJourneyStore((state) => state.setGoalText);
   const plan = useJourneyStore((state) => state.activePlan);
   const { balanceQuery } = useWalletController(userId);
   const prefs = usePreferencesController(userId);
@@ -33,22 +30,6 @@ export default function HomePage() {
     setSignedIn(Boolean(getStoredToken()));
   }, []);
 
-  function runPlan(payload: Parameters<typeof planMutation.mutate>[0]) {
-    planMutation.mutate(payload, { onSuccess: () => router.push("/plan") });
-  }
-
-  // Free-text goal: let the backend's intent agent extract origin/destination
-  // from the sentence instead of forcing the hardcoded demo route.
-  function submit() {
-    if (!getStoredToken()) {
-      router.push("/auth?next=/");
-      return;
-    }
-    if (prompt.trim().length < 8) return;
-    setGoalText(prompt.trim());
-    runPlan({ user_id: userId, goal_text: prompt.trim(), max_options: 3 });
-  }
-
   return (
     <div className="grid gap-6 lg:grid-cols-[1fr_360px]">
       <section className="space-y-6">
@@ -57,7 +38,7 @@ export default function HomePage() {
           <h1 className="max-w-3xl text-4xl font-semibold tracking-normal text-slate-950 sm:text-5xl">{greeting}</h1>
           <p className="max-w-2xl text-lg text-slate-600">Tell us where you need to be. We&apos;ll compare time, cost, and comfort before asking for consent to book.</p>
         </div>
-        <AssistantComposer value={prompt} onChange={setPrompt} onSubmit={submit} loading={planMutation.isPending} />
+        <ConversationalAssistant onAuthRequired={() => router.push("/auth?next=/")} />
         {plan ? (
           <div className="flex flex-wrap gap-3">
             <Link href="/plan" className="inline-flex h-10 items-center rounded-md border border-slate-200 bg-white px-4 text-sm font-medium">

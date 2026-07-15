@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Loader2, LocateFixed, Send, Trash2 } from "lucide-react";
 import { toast } from "sonner";
@@ -27,9 +27,18 @@ export function ConversationalAssistant({ onAuthRequired }: { onAuthRequired: ()
   const latest = useJourneyStore((state) => state.chatLatest);
   const appendChatMessage = useJourneyStore((state) => state.appendChatMessage);
   const setChatResponse = useJourneyStore((state) => state.setChatResponse);
+  const updateChatResponse = useJourneyStore((state) => state.updateChatResponse);
   const clearChat = useJourneyStore((state) => state.clearChat);
   const router = useRouter();
   const messages = storedMessages.length ? storedMessages : [GREETING];
+  // Keep the transcript pinned to the newest message so the user never has to
+  // scroll down after sending — the scroll container snaps to the bottom
+  // whenever messages, results, or the loading state change.
+  const scrollRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [storedMessages, latest, loading]);
 
   async function handleClear() {
     if (sessionId) {
@@ -42,14 +51,22 @@ export function ConversationalAssistant({ onAuthRequired }: { onAuthRequired: ()
     clearChat();
   }
 
-  async function submit(message = input.trim(), location?: GeolocationCoordinates) {
+  async function submit(
+    message = input.trim(),
+    { location, quiet = false }: { location?: GeolocationCoordinates; quiet?: boolean } = {},
+  ) {
     if (!message || loading) return;
     if (!getStoredToken()) {
       onAuthRequired();
       return;
     }
-    setInput("");
-    appendChatMessage({ role: "user", text: message });
+    // "Quiet" turns (tweaking a leg option) refresh the live review in place
+    // rather than posting the click as a chat bubble and repeating the whole
+    // review back — so the user's transcript isn't spammed on every change.
+    if (!quiet) {
+      setInput("");
+      appendChatMessage({ role: "user", text: message });
+    }
     setLoading(true);
     try {
       const response = await sendChatMessage({
@@ -67,7 +84,8 @@ export function ConversationalAssistant({ onAuthRequired }: { onAuthRequired: ()
             }
           : {}),
       });
-      setChatResponse(response);
+      if (quiet) updateChatResponse(response);
+      else setChatResponse(response);
       const planned = response.tool_results.find((item) => item.ok && item.tool === "plan_journey")?.data;
       if (planned) {
         setPlan({ ...planned, chain_of_thought: planned.chain_of_thought ?? [] } as PlanResponse);
@@ -111,7 +129,7 @@ export function ConversationalAssistant({ onAuthRequired }: { onAuthRequired: ()
     navigator.geolocation.getCurrentPosition(
       (position) => {
         setLoading(false);
-        void submit(action.message, position.coords);
+        void submit(action.message, { location: position.coords });
       },
       () => {
         setLoading(false);
@@ -145,27 +163,44 @@ export function ConversationalAssistant({ onAuthRequired }: { onAuthRequired: ()
         </div>
       ) : null}
       {messages.length ? (
-        <div className="max-h-[420px] space-y-3 overflow-y-auto border-b border-slate-100 p-4" aria-live="polite">
+        <div ref={scrollRef} className="max-h-[420px] space-y-3 overflow-y-auto border-b border-slate-100 p-4" aria-live="polite">
           {messages.map((message, index) => (
             <div key={`${message.role}-${index}`} className={`flex ${message.role === "user" ? "justify-end" : "justify-start"}`}>
-              <p className={`max-w-[88%] whitespace-pre-line rounded-md px-3 py-2 text-sm leading-6 ${message.role === "user" ? "bg-slate-950 text-white" : "bg-slate-100 text-slate-800"}`}>
+              <p className={`max-w-[88%] whitespace-pre-line rounded-md px-3 py-2 text-sm leading-6 ${message.role === "user" ? "bg-brand-600 text-white" : "bg-slate-100 text-slate-800"}`}>
                 {message.text}
               </p>
             </div>
           ))}
 
-          {latest?.leg_option_groups.map((group) => (
-            <section key={group.leg_number} className="border-t border-slate-100 pt-3">
-              <h3 className="text-sm font-semibold">Leg {group.leg_number}: {group.origin} to {group.destination}</h3>
-              <div className="mt-2 flex flex-wrap gap-2">
-                {group.options.map((option, index) => (
-                  <Button key={option.leg_id} variant="secondary" size="sm" onClick={() => void submit(`Leg ${group.leg_number} option ${index + 1}`)} disabled={loading}>
-                    {option.mode} · {String(option.metadata.specification ?? option.operator)} · {formatInr(option.price)}
-                  </Button>
-                ))}
-              </div>
-            </section>
-          ))}
+          {latest?.leg_option_groups.map((group) => {
+            const selectedLegId = latest?.state.selected_leg_ids?.[String(group.leg_number)];
+            return (
+              <section key={group.leg_number} className="border-t border-slate-100 pt-3">
+                <h3 className="text-sm font-semibold">Leg {group.leg_number}: {group.origin} to {group.destination}</h3>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {group.options.map((option, index) => {
+                    const selected = selectedLegId
+                      ? option.leg_id === selectedLegId
+                      : option.leg_id === group.default_leg_id;
+                    return (
+                      <Button
+                        key={option.leg_id}
+                        variant={selected ? "primary" : "secondary"}
+                        size="sm"
+                        aria-pressed={selected}
+                        // Quiet turn: updates the review pricing in place instead
+                        // of posting the click and repeating the whole review.
+                        onClick={() => void submit(`Leg ${group.leg_number} option ${index + 1}`, { quiet: true })}
+                        disabled={loading}
+                      >
+                        {option.mode} · {String(option.metadata.specification ?? option.operator)} · {formatInr(option.price)}
+                      </Button>
+                    );
+                  })}
+                </div>
+              </section>
+            );
+          })}
 
           {latest?.journey_review ? (
             <section className="border-t border-slate-200 pt-3">

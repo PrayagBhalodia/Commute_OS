@@ -38,7 +38,7 @@ export default function HomePage() {
     <div className="grid gap-6 lg:grid-cols-[1fr_360px]">
       <section className="space-y-6">
         <div className="space-y-3">
-          <p className="text-sm font-medium text-teal-700">AI-first Journey Operating System</p>
+          <p className="inline-flex items-center rounded-full bg-brand-50 px-3 py-1 text-sm font-medium text-brand-700">AI-first Journey Operating System</p>
           <h1 className="max-w-3xl text-4xl font-semibold tracking-normal text-slate-950 sm:text-5xl">{greeting}</h1>
           <p className="max-w-2xl text-lg text-slate-600">Tell us where you need to be. We&apos;ll compare time, cost, and comfort before asking for consent to book.</p>
         </div>

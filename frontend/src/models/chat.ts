@@ -30,7 +30,7 @@ export interface ChatResponse {
   session_id: string;
   user_id: string;
   message: string;
-  state: { status: string };
+  state: { status: string; selected_leg_ids?: Record<string, string> };
   suggested_actions: ChatAction[];
   leg_option_groups: LegOptionGroup[];
   journey_review?: JourneyReview | null;

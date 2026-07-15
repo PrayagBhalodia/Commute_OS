@@ -18,7 +18,7 @@ export function AssistantComposer({
   return (
     <div className="rounded-lg border border-slate-200 bg-white p-2 shadow-soft">
       <div className="flex items-center gap-2 px-2 py-1 text-sm font-medium text-slate-700">
-        <Sparkles className="h-4 w-4 text-teal-600" />
+        <Sparkles className="h-4 w-4 text-brand-600" />
         Journey assistant
       </div>
       <Textarea

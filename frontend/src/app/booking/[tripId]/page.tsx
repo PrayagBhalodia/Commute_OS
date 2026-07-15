@@ -79,7 +79,7 @@ export default function BookingPage() {
               <p>Status: <strong>{booking.booking.status}</strong></p>
               <p>Total charged: {formatInr(booking.booking.total_charged)}</p>
               {booking.booking.error ? <p className="text-red-700">{booking.booking.error}</p> : null}
-              <Link href="/active" className="inline-flex h-10 items-center rounded-md bg-slate-900 px-4 text-sm font-medium text-white">Track active journey</Link>
+              <Link href="/active" className="inline-flex h-10 items-center rounded-md bg-brand-600 px-4 text-sm font-medium text-white shadow-brand hover:bg-brand-700">Track active journey</Link>
             </CardContent>
           </Card>
         ) : null}

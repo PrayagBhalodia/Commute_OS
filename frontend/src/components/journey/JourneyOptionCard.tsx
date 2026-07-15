@@ -20,7 +20,7 @@ export function JourneyOptionCard({
 }) {
   return (
     <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}>
-      <Card className={selected ? "border-slate-900" : ""}>
+      <Card className={selected ? "border-brand-500 ring-1 ring-brand-500" : ""}>
         <CardHeader>
           <CardTitle>{label ?? itinerary.metadata.strategy?.toString().replace("_", " ") ?? "Journey option"}</CardTitle>
           <p className="mt-1 text-sm text-slate-600">{itinerary.explanation}</p>

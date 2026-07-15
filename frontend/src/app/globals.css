@@ -3,15 +3,17 @@
 @tailwind utilities;
 
 :root {
-  --background: 210 20% 98%;
+  /* White + purple theme. Neutrals stay cool slate; the brand hue is a
+     periwinkle violet used for CTAs, logos, active states, and accents. */
+  --background: 250 60% 99%;
   --foreground: 222 47% 11%;
   --card: 0 0% 100%;
-  --muted: 210 20% 94%;
+  --muted: 250 30% 95%;
   --muted-foreground: 215 16% 42%;
-  --border: 214 24% 88%;
-  --primary: 215 28% 17%;
+  --border: 250 30% 90%;
+  --primary: 254 84% 61%;
   --primary-foreground: 0 0% 100%;
-  --accent: 174 45% 44%;
+  --accent: 255 92% 76%;
 }
 
 * {
@@ -20,7 +22,12 @@
 
 body {
   margin: 0;
-  background: hsl(var(--background));
+  /* Light-purple wash at the bottom of every page that fades to white by the
+     midpoint. Fixed to the viewport so the glow stays anchored to the bottom
+     regardless of scroll position or page height. */
+  min-height: 100vh;
+  background: linear-gradient(to top, hsl(252 100% 93%) 0%, hsl(0 0% 100%) 50%);
+  background-attachment: fixed;
   color: hsl(var(--foreground));
   /* next/font defines --font-geist-sans on <body>, but Tailwind Preflight sets
      font-family on <html> where that variable is out of scope — so without
@@ -41,5 +48,5 @@ textarea {
 }
 
 .focus-ring {
-  @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-900 focus-visible:ring-offset-2;
+  @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-[hsl(var(--primary))];
 }

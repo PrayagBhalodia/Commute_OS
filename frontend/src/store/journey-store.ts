@@ -43,6 +43,7 @@ interface JourneyState {
   setDisruption: (disruption: DisruptionResponse) => void;
   appendChatMessage: (message: ChatMessage) => void;
   setChatResponse: (response: ChatResponse) => void;
+  updateChatResponse: (response: ChatResponse) => void;
   clearChat: () => void;
   resetJourney: () => void;
 }
@@ -104,6 +105,12 @@ export const useJourneyStore = create<JourneyState>()(
           chatLatest: response,
           chatMessages: [...state.chatMessages, { role: "assistant", text: response.message }],
         })),
+      // Refresh the live review (pricing, options) without adding a new
+      // transcript bubble — used when the user tweaks a leg option so the
+      // existing review updates in place instead of repeating the whole
+      // "Final journey review" message on every click.
+      updateChatResponse: (response) =>
+        set({ chatSessionId: response.session_id, chatLatest: response }),
       clearChat: () =>
         set({ chatMessages: [], chatSessionId: undefined, chatLatest: undefined }),
       resetJourney: () =>

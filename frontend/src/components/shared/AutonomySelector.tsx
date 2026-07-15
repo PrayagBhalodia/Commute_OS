@@ -14,7 +14,7 @@ export function AutonomySelector({ value, onChange }: { value: string; onChange:
           key={level.value}
           type="button"
           onClick={() => onChange(level.value)}
-          className={`rounded-lg border p-4 text-left transition ${value === level.value ? "border-slate-900 bg-white" : "border-slate-200 bg-slate-50 hover:bg-white"}`}
+          className={`rounded-lg border p-4 text-left transition ${value === level.value ? "border-brand-500 bg-brand-50" : "border-slate-200 bg-slate-50 hover:bg-white"}`}
         >
           <p className="font-semibold">{level.label}</p>
           <p className="mt-2 text-sm text-slate-600">{level.description}</p>

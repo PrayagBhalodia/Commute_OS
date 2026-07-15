@@ -173,13 +173,13 @@ export default function AuthPage() {
     });
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-background px-4 py-10">
+    <div className="flex min-h-screen items-center justify-center px-4 py-10">
       {GOOGLE_CLIENT_ID ? (
         <Script src="https://accounts.google.com/gsi/client" onLoad={() => setGisReady(true)} />
       ) : null}
       <div className="w-full max-w-md space-y-6">
         <Link href="/" className="flex items-center justify-center gap-3" aria-label="Commute OS home">
-          <div className="flex h-10 w-10 items-center justify-center rounded-md bg-slate-950 text-white">
+          <div className="flex h-10 w-10 items-center justify-center rounded-md bg-brand-600 text-white shadow-brand">
             <CalendarClock className="h-5 w-5" />
           </div>
           <div>
@@ -190,7 +190,7 @@ export default function AuthPage() {
 
         <div className="rounded-lg border border-slate-200 bg-white p-6 shadow-soft sm:p-8">
           <div className="space-y-1 text-center">
-            <p className="text-sm font-medium text-teal-700">
+            <p className="text-sm font-medium text-brand-600">
               {mode === "login" ? "Welcome back" : "Join Commute OS"}
             </p>
             <h1 className="text-2xl font-semibold tracking-normal text-slate-950">
@@ -239,7 +239,7 @@ export default function AuthPage() {
             </p>
           ) : null}
           {notice && !error ? (
-            <p className="mb-4 flex items-start gap-2 rounded-md border border-teal-200 bg-teal-50 px-3 py-2 text-sm text-teal-800">
+            <p className="mb-4 flex items-start gap-2 rounded-md border border-brand-200 bg-brand-50 px-3 py-2 text-sm text-brand-800">
               <MailCheck className="mt-0.5 h-4 w-4 shrink-0" /> {notice}
             </p>
           ) : null}
@@ -277,7 +277,7 @@ export default function AuthPage() {
               </Button>
               <p className="text-center text-sm text-slate-600">
                 New to Commute OS?{" "}
-                <button type="button" className="font-medium text-teal-700 hover:underline" onClick={() => switchMode("signup")}>
+                <button type="button" className="font-medium text-brand-700 hover:underline" onClick={() => switchMode("signup")}>
                   Create an account
                 </button>
               </p>
@@ -319,7 +319,7 @@ export default function AuthPage() {
               </Button>
               <p className="text-center text-sm text-slate-600">
                 Already have an account?{" "}
-                <button type="button" className="font-medium text-teal-700 hover:underline" onClick={() => switchMode("login")}>
+                <button type="button" className="font-medium text-brand-700 hover:underline" onClick={() => switchMode("login")}>
                   Sign in
                 </button>
               </p>
@@ -365,7 +365,7 @@ export default function AuthPage() {
                 </button>
                 <button
                   type="button"
-                  className="font-medium text-teal-700 hover:underline disabled:cursor-not-allowed disabled:text-slate-400 disabled:no-underline"
+                  className="font-medium text-brand-700 hover:underline disabled:cursor-not-allowed disabled:text-slate-400 disabled:no-underline"
                   disabled={resendIn > 0 || loading}
                   onClick={sendOtp}
                 >
@@ -406,7 +406,7 @@ export default function AuthPage() {
                 <p
                   className={
                     password === confirmPassword
-                      ? "flex items-center gap-1.5 text-sm text-teal-700"
+                      ? "flex items-center gap-1.5 text-sm text-emerald-600"
                       : "text-sm text-red-600"
                   }
                 >

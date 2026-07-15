@@ -77,7 +77,7 @@ export function UserMenu({ openUp = false }: { openUp?: boolean } = {}) {
         className="focus-ring inline-flex h-9 items-center gap-2 rounded-md border border-slate-200 bg-white pl-1.5 pr-2.5 text-sm font-medium text-slate-700 hover:bg-slate-50"
         onClick={() => setOpen((v) => !v)}
       >
-        <span className="flex h-6 w-6 items-center justify-center rounded-full bg-slate-950 text-xs font-semibold text-white">
+        <span className="flex h-6 w-6 items-center justify-center rounded-full bg-brand-600 text-xs font-semibold text-white">
           {initial}
         </span>
         <span className="hidden max-w-36 truncate sm:block">{user.name || user.email}</span>
@@ -92,7 +92,7 @@ export function UserMenu({ openUp = false }: { openUp?: boolean } = {}) {
           )}
         >
           <div className="flex items-center gap-3 border-b border-slate-100 pb-3">
-            <span className="flex h-9 w-9 items-center justify-center rounded-full bg-slate-950 text-sm font-semibold text-white">
+            <span className="flex h-9 w-9 items-center justify-center rounded-full bg-brand-600 text-sm font-semibold text-white">
               {initial}
             </span>
             <div className="min-w-0">
@@ -202,7 +202,7 @@ function PreferencesTab({ userId }: { userId: string }) {
             <label key={mode} className="flex cursor-pointer items-center gap-2 rounded-md border border-slate-200 px-2.5 py-1.5 capitalize hover:bg-slate-50">
               <input
                 type="checkbox"
-                className="accent-slate-900"
+                className="accent-brand-600"
                 checked={modes.includes(mode)}
                 onChange={(e) => setModes((prev) => (e.target.checked ? [...prev, mode] : prev.filter((m) => m !== mode)))}
               />

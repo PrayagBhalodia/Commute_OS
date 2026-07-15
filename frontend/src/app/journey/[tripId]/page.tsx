@@ -28,7 +28,7 @@ export default function JourneyDetailPage() {
           <h1 className="text-2xl font-semibold">Journey details</h1>
           <p className="text-sm text-slate-500">{plan.trip_id} · {itinerary.itinerary_id}</p>
         </div>
-        <Link href={`/booking/${plan.trip_id}`} className="inline-flex h-10 items-center rounded-md bg-slate-900 px-4 text-sm font-medium text-white">Review booking</Link>
+        <Link href={`/booking/${plan.trip_id}`} className="inline-flex h-10 items-center rounded-md bg-brand-600 px-4 text-sm font-medium text-white shadow-brand hover:bg-brand-700">Review booking</Link>
       </div>
       <JourneyMetrics itinerary={itinerary} />
       <div className="grid gap-6 lg:grid-cols-[1fr_360px]">

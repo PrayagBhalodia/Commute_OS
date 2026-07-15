@@ -117,7 +117,7 @@ export function DateTimeModal({
           >
             <div className="flex items-start justify-between gap-3 p-5 pb-3">
               <div className="flex items-center gap-2">
-                <span className="flex h-9 w-9 items-center justify-center rounded-full bg-teal-50 text-teal-700">
+                <span className="flex h-9 w-9 items-center justify-center rounded-full bg-brand-50 text-brand-700">
                   <CalendarClock className="h-5 w-5" />
                 </span>
                 <div>

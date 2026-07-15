@@ -10,7 +10,7 @@ from typing import Any
 
 from llm.client import LocalLoraClient, OpenAICompatibleClient, build_llm_client
 from llm.conversation_memory import ConversationMemory
-from llm.prompts import state_context
+from llm.prompts import SLOT_FILLING_PROMPT, state_context
 from llm.schemas import (
     ChatMessageRequest,
     ChatMessageResponse,
@@ -20,7 +20,7 @@ from llm.schemas import (
     SuggestedAction,
 )
 from llm.tool_registry import ToolRegistry
-from tools.maps_api import classify_place
+from tools.maps_api import classify_place, reverse_geocode
 
 
 # "keep the broad place" signals when the agent asked to narrow a state/city.
@@ -45,6 +45,25 @@ HINGLISH_MARKERS = {
     "aap", "abhi", "batao", "bhai", "chahiye", "dekho", "ghar", "hai",
     "jaldi", "jana", "kar", "karo", "kal", "kya", "mujhe", "nahi",
     "paise", "pahuch", "sabse", "sasta", "tak", "zyada",
+}
+
+# Trip variables collected during the intent phase, in the exact order the
+# LLM wrapper (and the deterministic fallback) ask for them.
+ONWARD_SLOTS = ("origin", "destination", "start_date", "start_time")
+RETURN_SLOTS = ("return_origin", "return_destination", "return_date", "return_time")
+# Every free-text slot the LLM is allowed to fill.
+LLM_TEXT_SLOTS = ONWARD_SLOTS + RETURN_SLOTS
+# slot name -> the conversation status used while that slot is outstanding.
+SLOT_STATUS = {
+    "origin": "waiting_for_origin",
+    "destination": "waiting_for_destination",
+    "start_date": "waiting_for_start_date",
+    "start_time": "waiting_for_start_time",
+    "return_required": "waiting_for_return",
+    "return_origin": "waiting_for_return_origin",
+    "return_destination": "waiting_for_return_destination",
+    "return_date": "waiting_for_return_date",
+    "return_time": "waiting_for_return_time",
 }
 
 
@@ -82,6 +101,220 @@ class ConversationAgent:
     def _is_hinglish(text: str) -> bool:
         words = set(re.findall(r"[a-z]+", text.lower()))
         return len(words & HINGLISH_MARKERS) >= 2
+
+    @staticmethod
+    def _resolve_current_location(request: ChatMessageRequest) -> str:
+        """Real place name for shared device coordinates.
+
+        Reverse-geocodes via LocationIQ/Nominatim (offline catalog as a
+        fallback) so the chat, state, and itineraries show the actual place
+        (e.g. "Navrangpura, Ahmedabad") instead of the generic
+        "Current location" label.
+        """
+        place: dict[str, Any] | None = None
+        try:
+            place = reverse_geocode(request.current_lat, request.current_lng)
+        except Exception:  # noqa: BLE001 — any geocoder failure falls back
+            place = None
+        if place:
+            name = (place.get("name") or "").strip()
+            if name.startswith("Pin ("):
+                name = ""  # raw-coordinate pin, not a real place name
+            city = (place.get("city") or "").strip()
+            if name and city and city.lower() not in name.lower():
+                return f"{name}, {city}"
+            if name:
+                return name
+            if city:
+                return city
+        label = (request.current_location_label or "").strip()
+        return label or "Current location"
+
+    # ------------------------------------------------------------------
+    # LLM slot-filling wrapper (primary conversational brain).
+    #
+    # The LLM extracts the trip variables from natural language; this
+    # deterministic code decides which slot is still missing and whether the
+    # trip is ready to plan, so the model can never skip a field or plan early.
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _first_missing_slot(constraints: Any) -> str | None:
+        """Next trip variable to collect, honouring the return-journey rules."""
+        for slot in ONWARD_SLOTS:
+            if not getattr(constraints, slot):
+                return slot
+        if constraints.return_required is None:
+            return "return_required"
+        if constraints.return_required:
+            for slot in RETURN_SLOTS:
+                if not getattr(constraints, slot):
+                    return slot
+        return None
+
+    @staticmethod
+    def _apply_llm_slots(constraints: Any, slots: dict[str, Any]) -> None:
+        """Merge the LLM's extracted variables into the stored constraints.
+
+        Only non-empty values overwrite, so a later turn never wipes a slot the
+        user already filled just because the model omitted it.
+        """
+        if not isinstance(slots, dict):
+            return
+        placeholders = {"current location", "my current location", "my location", "here"}
+        for field in LLM_TEXT_SLOTS:
+            value = slots.get(field)
+            if isinstance(value, str) and value.strip():
+                # Never let a generic placeholder overwrite a real place name
+                # (device coordinates are resolved to an actual place upstream).
+                if value.strip().lower() in placeholders and getattr(constraints, field):
+                    continue
+                setattr(constraints, field, value.strip())
+        rr = slots.get("return_required")
+        if isinstance(rr, bool):
+            constraints.return_required = rr
+
+    @staticmethod
+    def _slot_actions(slot: str, constraints: Any) -> list[SuggestedAction]:
+        """Quick-reply buttons that go with the question for a given slot."""
+        if slot == "origin":
+            return [
+                SuggestedAction(id="share_location", label="Use current location", message="Use my current location", kind="location"),
+                SuggestedAction(id="manual_origin", label="Enter manually", message="I will enter my starting location manually"),
+            ]
+        if slot == "return_required":
+            return [
+                SuggestedAction(id="return_yes", label="Yes, return", message="Yes, I need a return journey"),
+                SuggestedAction(id="return_no", label="No, one way", message="No, this is one way"),
+            ]
+        if slot == "return_origin" and constraints.destination:
+            return [SuggestedAction(id="return_origin_same", label=f"Same as {constraints.destination}", message=f"Same as {constraints.destination}")]
+        if slot == "return_destination" and constraints.origin:
+            return [SuggestedAction(id="return_destination_same", label=f"Same as {constraints.origin}", message=f"Same as {constraints.origin}")]
+        return []
+
+    @staticmethod
+    def _default_slot_question(slot: str, constraints: Any, hinglish: bool) -> str:
+        """Fallback question if the model doesn't supply its own phrasing."""
+        questions = {
+            "origin": "Where are you starting from?",
+            "destination": "Where do you need to go?",
+            "start_date": "What date would you like to start your journey?",
+            "start_time": "What time would you like to start?",
+            "return_required": "Do you need a return journey?",
+            "return_origin": f"Where will your return journey start? It doesn't have to be {constraints.destination or 'your destination'}.",
+            "return_destination": f"Where should the return journey end? It doesn't have to be {constraints.origin or 'your origin'}.",
+            "return_date": "What date is the return journey?",
+            "return_time": "What time would you like to start the return journey?",
+        }
+        return questions.get(slot, "Could you share a few more trip details?")
+
+    @staticmethod
+    def _parse_json(raw: str) -> dict[str, Any] | None:
+        """Parse a JSON object out of an LLM reply, tolerating ```json fences."""
+        text = (raw or "").strip()
+        if text.startswith("```"):
+            text = re.sub(r"^```(?:json)?", "", text).strip()
+            text = re.sub(r"```$", "", text).strip()
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            match = re.search(r"\{.*\}", text, re.DOTALL)
+            if not match:
+                return None
+            try:
+                parsed = json.loads(match.group(0))
+            except json.JSONDecodeError:
+                return None
+        return parsed if isinstance(parsed, dict) else None
+
+    def _collect_intent_llm(
+        self,
+        state: ConversationState,
+        request: ChatMessageRequest,
+        trace: list[ExecutionTraceEntry],
+        hinglish: bool,
+    ) -> tuple[str | None, list[SuggestedAction], str | None]:
+        """LLM-driven collection of the trip variables.
+
+        Returns (answer, suggested_actions, mode). answer is None when the LLM
+        provider is unavailable or its output was unusable, so the caller can
+        fall back to the deterministic controller.
+        """
+        chat_fn = getattr(self.client, "chat", None)
+        if not getattr(self.client, "enabled", False) or chat_fn is None:
+            return None, [], None
+
+        constraints = state.constraints
+        known = {
+            field: getattr(constraints, field)
+            for field in (*LLM_TEXT_SLOTS, "return_required")
+            if getattr(constraints, field) is not None
+        }
+        history = [
+            {"role": turn.role, "content": turn.content}
+            for turn in state.turns[-10:]
+        ]
+        directive = (
+            "Known trip variables so far (do not re-ask these): "
+            f"{json.dumps(known)}. Update them from the latest user message and "
+            "ask for the next missing field in the required order. Respond with "
+            "the JSON object only."
+        )
+        messages = [
+            {"role": "system", "content": SLOT_FILLING_PROMPT},
+            *history,
+            {"role": "system", "content": directive},
+        ]
+        raw = chat_fn(messages=messages)
+        if raw is None:
+            trace.append(
+                ExecutionTraceEntry(
+                    event="llm_fallback",
+                    status="completed",
+                    detail="LLM provider unavailable; deterministic controller used.",
+                )
+            )
+            return None, [], None
+
+        data = self._parse_json(raw)
+        if data is None:
+            trace.append(
+                ExecutionTraceEntry(
+                    event="llm_fallback",
+                    status="completed",
+                    detail="LLM output was not valid JSON; deterministic controller used.",
+                )
+            )
+            return None, [], None
+
+        self._apply_llm_slots(constraints, data.get("slots") or {})
+        trace.append(
+            ExecutionTraceEntry(
+                event="intent_parsed",
+                detail="Trip variables extracted by VoyageAI (LLM slot-filling).",
+            )
+        )
+
+        missing = self._first_missing_slot(constraints)
+        if missing is None:
+            # All variables collected — hand off to the deterministic planning
+            # path via the preferences step.
+            state.status = "waiting_for_preference_choice"
+            return (
+                "Would you like to use your usual saved preferences, or specify "
+                "preferences for this trip?",
+                [
+                    SuggestedAction(id="usual_preferences", label="Use usual", message="Use my usual saved preferences"),
+                    SuggestedAction(id="custom_preferences", label="Specify this trip", message="I want custom preferences for this trip"),
+                ],
+                "llm",
+            )
+
+        state.status = SLOT_STATUS.get(missing, "collecting_intent")
+        reply = (data.get("reply") or "").strip() or self._default_slot_question(
+            missing, constraints, hinglish
+        )
+        return reply, self._slot_actions(missing, constraints), "llm"
 
     def _destination_narrowing_question(
         self, state: ConversationState, message: str, hinglish: bool
@@ -432,7 +665,11 @@ class ConversationAgent:
                 continue
         for pattern in ("%d %B", "%d %b", "%B %d", "%b %d"):
             try:
-                parsed = datetime.strptime(cleaned, pattern).date().replace(year=base.year)
+                # Parse against the current year explicitly to avoid the
+                # ambiguous no-year default (and Feb 29 failures).
+                parsed = datetime.strptime(
+                    f"{cleaned} {base.year}", f"{pattern} %Y"
+                ).date()
             except ValueError:
                 continue
             # A month/day with no year means the next such date, not last year's.
@@ -968,7 +1205,42 @@ class ConversationAgent:
                 )
 
         else:
-            is_travel = (
+            # Shared device coordinates resolve to a real place name before any
+            # conversational handling, so the origin reads as e.g.
+            # "Navrangpura, Ahmedabad" everywhere — never "Current location".
+            located_name: str | None = None
+            if (
+                state.constraints.origin is None
+                and request.current_lat is not None
+                and request.current_lng is not None
+                and (
+                    re.search(r"\b(current|my location|here)\b", lower)
+                    or state.status
+                    in {
+                        "awaiting_origin_choice",
+                        "waiting_for_location_permission",
+                        "waiting_for_origin",
+                    }
+                )
+            ):
+                located_name = self._resolve_current_location(request)
+                state.constraints.origin = located_name
+                state.constraints.origin_lat = request.current_lat
+                state.constraints.origin_lng = request.current_lng
+
+            # Primary brain: the LLM wrapper extracts the trip variables and
+            # asks for the next missing one. It returns answer=None when the
+            # provider is unavailable/unusable, in which case the deterministic
+            # controller below takes over (also used offline and in tests).
+            llm_answer, llm_actions, llm_mode = self._collect_intent_llm(
+                state, request, trace, hinglish
+            )
+            if llm_answer is not None:
+                answer = llm_answer
+                suggested_actions.extend(llm_actions)
+                mode = llm_mode or "llm"
+
+            is_travel = answer is None and (
                 self._contains_any(lower, TRAVEL_TERMS)
                 or state.status.startswith("waiting_for_")
                 or state.status in {"awaiting_origin_choice", "choosing_legs"}
@@ -1004,21 +1276,10 @@ class ConversationAgent:
             elif is_travel and not origin:
                 wants_current = bool(re.search(r"\b(current|my location|here)\b", lower))
                 wants_manual = bool(re.search(r"\b(manual|enter|type)\b", lower))
-                if wants_current and request.current_lat is not None and request.current_lng is not None:
-                    state.constraints.origin = request.current_location_label or "Current location"
-                    state.constraints.origin_lat = request.current_lat
-                    state.constraints.origin_lng = request.current_lng
-                    state.status = "waiting_for_destination"
-                    if destination:
-                        if not state.constraints.start_date:
-                            state.status = "waiting_for_start_date"
-                            answer = f"Current location received. What date would you like to start your journey to {destination}?"
-                        else:
-                            state.status = "waiting_for_start_time"
-                            answer = "Current location received. What time would you like to start?"
-                    else:
-                        answer = "Current location mil gaya. Kahan jana hai?" if hinglish else "Current location received. Where do you need to go?"
-                elif wants_current:
+                # Note: "use current location" WITH coordinates never reaches
+                # here — the coordinates are resolved to a real place name (and
+                # stored as the origin) before the conversational handling.
+                if wants_current:
                     state.status = "waiting_for_location_permission"
                     answer = ("Browser mein location allow karo, ya starting location manually enter karo." if hinglish else "Please allow location access in your browser, or enter your starting location manually.")
                     suggested_actions.extend([
@@ -1122,8 +1383,18 @@ class ConversationAgent:
                 answer, suggested_actions = self._plan_ready_journey(
                     state, request, trace, tool_results
                 )
-            elif re.search(r"\b(hi|hello|hey|namaste)\b", lower):
+            elif answer is None and re.search(r"\b(hi|hello|hey|namaste)\b", lower):
                 answer = "Hi, where are you heading today?"
+
+            # Acknowledge a freshly shared location with its resolved place
+            # name so the user sees where the journey actually starts.
+            if located_name and answer:
+                prefix = (
+                    f"Location mil gayi — {located_name} se start karenge."
+                    if hinglish
+                    else f"Got it — starting from {located_name}."
+                )
+                answer = f"{prefix} {answer}"
 
         if answer is None:
             answer, mode = self._provider_turn(

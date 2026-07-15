@@ -3,6 +3,7 @@ import { apiClient } from "./api-client";
 export type AuthUser = {
   id: string;
   email: string;
+  username: string | null;
   phone: string | null;
   name: string | null;
   provider: "password" | "google";
@@ -36,6 +37,18 @@ export async function completeSignup(input: {
   confirm_password: string;
 }) {
   const { data } = await apiClient.post<AuthSession>("/auth/signup/complete", input);
+  return data;
+}
+
+// Direct username + password signup (no email OTP). Alternative to the
+// requestSignupOtp → verifySignupOtp → completeSignup flow above.
+export async function register(input: {
+  email: string;
+  username: string;
+  password: string;
+  confirm_password: string;
+}) {
+  const { data } = await apiClient.post<AuthSession>("/auth/register", input);
   return data;
 }
 

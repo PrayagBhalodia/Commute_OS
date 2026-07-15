@@ -115,6 +115,27 @@ class OpenAICompatibleClient:
             )
             return None
 
+    def chat(self, *, messages: list[dict[str, str]]) -> str | None:
+        """Plain chat completion (no tools). Returns the text, or None on failure.
+
+        Used by the conversational slot-filling wrapper: the caller supplies its
+        own system message, so SYSTEM_PROMPT is not injected here.
+        """
+        client = self._get_client()
+        if client is None:
+            return None
+        try:
+            response = client.chat.completions.create(
+                model=self.model,
+                temperature=self.temperature,
+                messages=messages,
+                timeout=30.0,
+            )
+            return response.choices[0].message.content or ""
+        except Exception:
+            logger.warning("LLM chat call failed.", exc_info=True)
+            return None
+
 
 class LocalLoraClient:
     """In-process provider running the Commute OS LoRA adapter directly.

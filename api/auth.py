@@ -41,6 +41,7 @@ OTP_TTL_SECONDS = 10 * 60
 OTP_MAX_ATTEMPTS = 5
 PHONE_RE = re.compile(r"^\+?[0-9]{10,13}$")
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+USERNAME_RE = re.compile(r"^[a-zA-Z0-9_]{3,32}$")
 
 _otp_lock = threading.Lock()
 _pending_otps: dict[str, dict[str, Any]] = {}
@@ -61,6 +62,7 @@ def _connect() -> sqlite3.Connection:
         CREATE TABLE IF NOT EXISTS users (
             id TEXT PRIMARY KEY,
             email TEXT UNIQUE NOT NULL,
+            username TEXT UNIQUE,
             phone TEXT UNIQUE,
             name TEXT,
             password_hash TEXT,
@@ -70,6 +72,15 @@ def _connect() -> sqlite3.Connection:
         )
         """
     )
+    # Migrate older prototype DBs that predate optional username handles.
+    # (SQLite can't add a UNIQUE column via ALTER, so add it plain + index.)
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(users)").fetchall()}
+    if "username" not in cols:
+        conn.execute("ALTER TABLE users ADD COLUMN username TEXT")
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username ON users(username)"
+        )
+        conn.commit()
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS sessions (
@@ -89,9 +100,11 @@ def _hash_password(password: str, salt: str) -> str:
 
 
 def _public_user(row: sqlite3.Row) -> dict[str, Any]:
+    keys = row.keys()
     return {
         "id": row["id"],
         "email": row["email"],
+        "username": row["username"] if "username" in keys else None,
         "phone": row["phone"],
         "name": row["name"],
         "provider": row["provider"],
@@ -106,6 +119,14 @@ def _create_session(conn: sqlite3.Connection, user_id: str) -> str:
     )
     conn.commit()
     return token
+
+
+def _normalize_username(value: str) -> str:
+    return value.strip()
+
+
+def _normalize_email(value: str) -> str:
+    return value.lower().strip()
 
 
 # ---------------------------------------------------------------------------
@@ -172,8 +193,33 @@ class CompleteSignupBody(_EmailModel):
     confirm_password: str
 
 
+class RegisterBody(BaseModel):
+    email: str
+    username: str = Field(min_length=3, max_length=32)
+    password: str = Field(min_length=8, max_length=128)
+    confirm_password: str
+
+    @field_validator("email")
+    @classmethod
+    def _valid_email(cls, value: str) -> str:
+        email = value.strip()
+        if not EMAIL_RE.match(email):
+            raise ValueError("Enter a valid email address.")
+        return email
+
+    @field_validator("username")
+    @classmethod
+    def _valid_username(cls, value: str) -> str:
+        username = value.strip()
+        if not USERNAME_RE.match(username):
+            raise ValueError(
+                "Username must be 3–32 characters: letters, numbers, underscore only."
+            )
+        return username
+
+
 class LoginBody(BaseModel):
-    identifier: str  # email or phone number
+    identifier: str  # email, phone number, or username
     password: str
 
 
@@ -314,8 +360,68 @@ def signup_complete(body: CompleteSignupBody) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Login / Google / session
+# Register (username + password, no OTP) / Login / Google / session
 # ---------------------------------------------------------------------------
+
+
+@router.post("/register")
+def register(body: RegisterBody) -> dict[str, Any]:
+    """Direct username + email + password signup (no email OTP).
+
+    An alternative to the OTP signup flow above; both create the same kind of
+    ``provider='password'`` account. Handy for quick/local sign-ups where email
+    delivery isn't set up.
+    """
+    if body.password != body.confirm_password:
+        raise HTTPException(status_code=400, detail="Passwords do not match.")
+
+    email = _normalize_email(body.email)
+    username = _normalize_username(body.username)
+    username_key = username.lower()
+
+    salt = secrets.token_hex(16)
+    user_id = f"user-{secrets.token_hex(6)}"
+    conn = _connect()
+    try:
+        existing = conn.execute(
+            "SELECT email, username FROM users WHERE email = ? OR lower(username) = ?",
+            (email, username_key),
+        ).fetchone()
+        if existing:
+            if existing["email"] == email:
+                raise HTTPException(
+                    status_code=409,
+                    detail="An account with this email already exists. Please sign in.",
+                )
+            raise HTTPException(
+                status_code=409,
+                detail="This username is already taken. Choose another.",
+            )
+
+        conn.execute(
+            "INSERT INTO users (id, email, username, name, password_hash, salt, provider, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, 'password', ?)",
+            (
+                user_id,
+                email,
+                username,
+                username,
+                _hash_password(body.password, salt),
+                salt,
+                time.time(),
+            ),
+        )
+        conn.commit()
+        token = _create_session(conn, user_id)
+        row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+        return {"token": token, "user": _public_user(row)}
+    except sqlite3.IntegrityError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail="Account already exists. Please sign in.",
+        ) from exc
+    finally:
+        conn.close()
 
 
 @router.post("/login")
@@ -323,9 +429,10 @@ def login(body: LoginBody) -> dict[str, Any]:
     identifier = body.identifier.lower().strip().replace(" ", "")
     conn = _connect()
     try:
+        # Accept email, phone, or username as the login identifier.
         row = conn.execute(
-            "SELECT * FROM users WHERE email = ? OR phone = ?",
-            (identifier, identifier),
+            "SELECT * FROM users WHERE email = ? OR phone = ? OR lower(username) = ?",
+            (identifier, identifier, identifier),
         ).fetchone()
         if row is None:
             logger.warning("Login failed: unknown identifier")

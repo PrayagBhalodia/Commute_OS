@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -99,11 +100,13 @@ def test_origin_choice_requires_explicit_location_share(tmp_path, monkeypatch):
             message="Use my current location",
             current_lat=23.0225,
             current_lng=72.5714,
-            current_location_label="Current location",
         )
     )
-    assert second.state.constraints.origin == "Current location"
+    # Coordinates resolve to the real place name (offline catalog: Ahmedabad),
+    # never the generic "Current location" label.
+    assert second.state.constraints.origin == "Ahmedabad"
     assert second.state.constraints.origin_lat == 23.0225
+    assert "Ahmedabad" in second.message
     assert second.state.status == "waiting_for_start_time"
     assert "time" in second.message.lower()
 
@@ -224,6 +227,138 @@ def test_hinglish_route_invokes_plan_tool(tmp_path, monkeypatch):
     assert response.state.constraints.preference_weights["cost"] == 1.0
     assert response.state.status == "waiting_for_start_date"
     assert not response.tool_results
+
+
+class ScriptedChatClient:
+    """Simulates a Gemini/ChatGPT wrapper: returns queued JSON slot-fills."""
+
+    enabled = True
+
+    def __init__(self, responses):
+        self._responses = list(responses)
+        self.calls = 0
+
+    def chat(self, *, messages):
+        self.calls += 1
+        return json.dumps(self._responses.pop(0))
+
+
+def test_llm_wrapper_collects_slots_one_at_a_time(tmp_path, monkeypatch):
+    client = ScriptedChatClient(
+        [
+            {"slots": {}, "reply": "Where are you starting from?"},
+            {"slots": {"origin": "Ahmedabad"}, "reply": "Where to?"},
+            {"slots": {"destination": "Jio Institute"}, "reply": "What date?"},
+            {"slots": {"start_date": "2026-08-01"}, "reply": "What time?"},
+            {"slots": {"start_time": "9 am"}, "reply": "Return journey?"},
+            {"slots": {"return_required": True}, "reply": "Return starts where?"},
+            {"slots": {"return_origin": "Jio Institute"}, "reply": "Return ends where?"},
+            {"slots": {"return_destination": "Gandhinagar"}, "reply": "Return date?"},
+            {"slots": {"return_date": "2026-08-05"}, "reply": "Return time?"},
+            {"slots": {"return_time": "6 pm"}, "reply": "All set!"},
+        ]
+    )
+    agent = make_agent(tmp_path, monkeypatch, client=client)
+    messages = [
+        "I want to plan a trip",
+        "From Ahmedabad",
+        "Jio Institute",
+        "August 1st",
+        "9 am",
+        "Yes I need to come back",
+        "Same as Jio Institute",
+        "Gandhinagar",  # return ends somewhere different from the origin
+        "August 5th",
+        "6 pm",
+    ]
+    expected_status = [
+        "waiting_for_origin",
+        "waiting_for_destination",
+        "waiting_for_start_date",
+        "waiting_for_start_time",
+        "waiting_for_return",
+        "waiting_for_return_origin",
+        "waiting_for_return_destination",
+        "waiting_for_return_date",
+        "waiting_for_return_time",
+        "waiting_for_preference_choice",
+    ]
+    session_id = None
+    response = None
+    for message, status in zip(messages, expected_status):
+        response = agent.handle(
+            ChatMessageRequest(session_id=session_id, user_id="wrap", message=message)
+        )
+        session_id = response.session_id
+        assert response.mode == "llm"
+        assert response.state.status == status
+
+    c = response.state.constraints
+    assert (c.origin, c.destination, c.start_date, c.start_time) == (
+        "Ahmedabad",
+        "Jio Institute",
+        "2026-08-01",
+        "9 am",
+    )
+    assert c.return_required is True
+    assert c.return_origin == "Jio Institute"
+    assert c.return_destination == "Gandhinagar"
+    assert (c.return_date, c.return_time) == ("2026-08-05", "6 pm")
+
+    # Handing off to the deterministic planning path still works.
+    planned = agent.handle(
+        ChatMessageRequest(
+            session_id=session_id,
+            user_id="wrap",
+            message="Use my usual saved preferences",
+        )
+    )
+    assert planned.state.status == "choosing_route"
+    assert planned.state.active_trip_id
+
+
+def test_llm_wrapper_extracts_full_first_prompt(tmp_path, monkeypatch):
+    client = ScriptedChatClient(
+        [
+            {
+                "slots": {
+                    "origin": "Ahmedabad",
+                    "destination": "Jio Institute",
+                    "start_date": "2026-08-01",
+                    "start_time": "9 am",
+                },
+                "reply": "Do you need a return journey?",
+            }
+        ]
+    )
+    agent = make_agent(tmp_path, monkeypatch, client=client)
+    response = agent.handle(
+        ChatMessageRequest(
+            user_id="wrap-full",
+            message="Plan Ahmedabad to Jio Institute on 2026-08-01 at 9 am",
+        )
+    )
+    assert response.mode == "llm"
+    # Everything was extracted from one prompt; only the return flag is missing.
+    assert response.state.status == "waiting_for_return"
+    assert response.state.constraints.origin == "Ahmedabad"
+    assert response.state.constraints.start_time == "9 am"
+
+
+def test_llm_wrapper_bad_json_falls_back(tmp_path, monkeypatch):
+    class GarbageChatClient:
+        enabled = True
+
+        def chat(self, *, messages):
+            return "sorry I can't do that"  # not JSON
+
+    agent = make_agent(tmp_path, monkeypatch, client=GarbageChatClient())
+    response = agent.handle(
+        ChatMessageRequest(user_id="wrap-bad", message="Plan a trip to Mumbai Airport")
+    )
+    # Unusable LLM output → deterministic controller takes over cleanly.
+    assert any(item.event == "llm_fallback" for item in response.execution_trace)
+    assert response.state.constraints.destination == "Mumbai Airport"
 
 
 class FailingClient:

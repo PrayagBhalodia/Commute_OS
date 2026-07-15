@@ -212,6 +212,22 @@ def geocode_point(name: str) -> Optional[tuple[float, float]]:
 
 
 @st.cache_data(show_spinner=False)
+def reverse_geocode_name(lat: float, lng: float) -> Optional[str]:
+    """Real place name for coordinates, so a "current location" pin shows
+    where it actually is. Cached; None on any failure."""
+    try:
+        from tools.maps_api import reverse_geocode
+
+        place = reverse_geocode(lat, lng)
+        name = (place.get("name") or "").strip()
+        if name and not name.startswith("Pin ("):
+            return name
+    except Exception:
+        pass
+    return None
+
+
+@st.cache_data(show_spinner=False)
 def osrm_route(start: tuple[float, float], end: tuple[float, float]) -> Optional[list[list[float]]]:
     """Real driving-road geometry [[lng,lat], …] via the free OSRM API. Cached.
 
@@ -519,7 +535,11 @@ def main() -> None:
         if use_origin_coords and origin_lat_in is not None:
             st.session_state.origin_lat = float(origin_lat_in)
             st.session_state.origin_lng = float(origin_lng_in)
-            st.session_state.origin_name = origin_addr.strip() or "Current location"
+            st.session_state.origin_name = (
+                origin_addr.strip()
+                or reverse_geocode_name(float(origin_lat_in), float(origin_lng_in))
+                or "Current location"
+            )
         elif origin_addr.strip():
             st.session_state.origin_name = origin_addr.strip()
             g = geocode_point(origin_addr.strip())

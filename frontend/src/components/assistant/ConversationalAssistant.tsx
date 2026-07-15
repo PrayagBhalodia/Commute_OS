@@ -60,9 +60,10 @@ export function ConversationalAssistant({ onAuthRequired }: { onAuthRequired: ()
         timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
         ...(location
           ? {
+              // No label on purpose: the backend reverse-geocodes the
+              // coordinates and uses the real place name everywhere.
               current_lat: location.latitude,
               current_lng: location.longitude,
-              current_location_label: "Current location",
             }
           : {}),
       });

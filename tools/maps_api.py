@@ -148,15 +148,36 @@ def nominatim_enabled() -> bool:
     return flag not in ("0", "false", "no", "off") and httpx is not None
 
 
-def _osm_endpoint(path: str) -> tuple[str, dict[str, Any], dict[str, str]]:
-    """URL, extra params, and headers for an OSM-style geocode request.
+def _geo_providers() -> list[dict[str, Any]]:
+    """Ordered OSM-compatible geocoders to try: LocationIQ first, then Nominatim.
 
-    LocationIQ (keyed, higher limits) when LOCATIONIQ_API_KEY is set,
-    otherwise the public Nominatim instance.
+    LocationIQ (keyed, higher free limits) is tried first when a key is set; the
+    public Nominatim instance is a keyless fallback, so a LocationIQ outage or
+    quota error still resolves places. LocationIQ only supports ``format=json``
+    while Nominatim additionally supports the richer ``jsonv2``.
     """
+    providers: list[dict[str, Any]] = []
     if locationiq_enabled():
-        return f"{_LOCATIONIQ_BASE}{path}", {"key": _locationiq_key()}, {}
-    return f"{_NOMINATIM_BASE}{path}", {}, {"User-Agent": _NOMINATIM_UA}
+        providers.append(
+            {
+                "source": "locationiq",
+                "base": _LOCATIONIQ_BASE,
+                "extra": {"key": _locationiq_key()},
+                "headers": {},
+                "format": "json",
+            }
+        )
+    if nominatim_enabled():
+        providers.append(
+            {
+                "source": "nominatim",
+                "base": _NOMINATIM_BASE,
+                "extra": {},
+                "headers": {"User-Agent": _NOMINATIM_UA},
+                "format": "jsonv2",
+            }
+        )
+    return providers
 
 
 def _nominatim_search(query: str) -> Optional[dict[str, Any]]:
@@ -166,44 +187,46 @@ def _nominatim_search(query: str) -> Optional[dict[str, Any]]:
         if key in _geo_cache:
             return _geo_cache[key]
     result: Optional[dict[str, Any]] = None
-    try:
-        url, extra, headers = _osm_endpoint("/search")
-        params: dict[str, Any] = {
-            "q": query,
-            "format": "jsonv2",
-            "limit": 5,
-            "addressdetails": 1,
-            **extra,
-        }
-        # Geocode worldwide by default so international destinations (e.g.
-        # "Japan") resolve to the real country rather than a same-named place
-        # inside India. Set NOMINATIM_COUNTRYCODES (comma-separated ISO codes,
-        # e.g. "in") to restrict the search back to specific countries.
-        _cc = os.environ.get("NOMINATIM_COUNTRYCODES", "").strip()
-        if _cc:
-            params["countrycodes"] = _cc
-        params["accept-language"] = _NOMINATIM_LANG
-        with httpx.Client(timeout=8.0, headers=headers) as client:
-            resp = client.get(url, params=params)
-            data = resp.json()
-        if isinstance(data, list) and data:
-            r0 = _pick_best_nominatim_result(data, query)
-            addr = r0.get("address", {}) or {}
-            result = {
-                "place_id": f"osm-{r0.get('osm_type', 'n')[0]}{r0.get('osm_id', '')}",
-                "name": (r0.get("name") or r0.get("display_name", query).split(",")[0]).strip(),
-                "address": r0.get("display_name", query),
-                "city": addr.get("city") or addr.get("town") or addr.get("village")
-                or addr.get("state_district"),
-                "state": addr.get("state"),
-                "lat": float(r0["lat"]),
-                "lng": float(r0["lon"]),
-                "place_type": "custom",
-                "place_rank": _osm_place_rank(r0, addr, query),
-                "metadata": {"osm_class": r0.get("class"), "osm_type_detail": r0.get("type")},
+    for provider in _geo_providers():
+        try:
+            params: dict[str, Any] = {
+                "q": query,
+                "format": provider["format"],
+                "limit": 5,
+                "addressdetails": 1,
+                **provider["extra"],
             }
-    except Exception:  # noqa: BLE001
-        result = None
+            # Geocode worldwide by default so international destinations (e.g.
+            # "Japan") resolve to the real country rather than a same-named
+            # place inside India. Set NOMINATIM_COUNTRYCODES (comma-separated
+            # ISO codes, e.g. "in") to restrict the search back to countries.
+            _cc = os.environ.get("NOMINATIM_COUNTRYCODES", "").strip()
+            if _cc:
+                params["countrycodes"] = _cc
+            params["accept-language"] = _NOMINATIM_LANG
+            with httpx.Client(timeout=8.0, headers=provider["headers"]) as client:
+                resp = client.get(f"{provider['base']}/search", params=params)
+                data = resp.json()
+            if isinstance(data, list) and data:
+                r0 = _pick_best_nominatim_result(data, query)
+                addr = r0.get("address", {}) or {}
+                result = {
+                    "place_id": f"osm-{r0.get('osm_type', 'n')[0]}{r0.get('osm_id', '')}",
+                    "name": (r0.get("name") or r0.get("display_name", query).split(",")[0]).strip(),
+                    "address": r0.get("display_name", query),
+                    "city": addr.get("city") or addr.get("town") or addr.get("village")
+                    or addr.get("state_district"),
+                    "state": addr.get("state"),
+                    "lat": float(r0["lat"]),
+                    "lng": float(r0["lon"]),
+                    "place_type": "custom",
+                    "place_rank": _osm_place_rank(r0, addr, query),
+                    "source": provider["source"],
+                    "metadata": {"osm_class": r0.get("class"), "osm_type_detail": r0.get("type")},
+                }
+                break
+        except Exception:  # noqa: BLE001 — try the next provider
+            continue
     with _geo_lock:
         _geo_cache[key] = result
     return result
@@ -216,34 +239,36 @@ def _nominatim_reverse(lat: float, lng: float) -> Optional[dict[str, Any]]:
         if key in _geo_cache:
             return _geo_cache[key]
     result: Optional[dict[str, Any]] = None
-    try:
-        url, extra, headers = _osm_endpoint("/reverse")
-        params = {
-            "lat": lat,
-            "lon": lng,
-            "format": "jsonv2",
-            "addressdetails": 1,
-            "accept-language": _NOMINATIM_LANG,
-            **extra,
-        }
-        with httpx.Client(timeout=8.0, headers=headers) as client:
-            resp = client.get(url, params=params)
-            data = resp.json()
-        if isinstance(data, dict) and data.get("lat"):
-            addr = data.get("address", {}) or {}
-            result = {
-                "place_id": f"osm-{data.get('osm_type', 'n')[0]}{data.get('osm_id', '')}",
-                "name": (data.get("name") or data.get("display_name", "").split(",")[0]).strip()
-                or f"Pin ({lat:.4f}, {lng:.4f})",
-                "address": data.get("display_name", f"{lat:.5f},{lng:.5f}"),
-                "city": addr.get("city") or addr.get("town") or addr.get("village"),
-                "state": addr.get("state"),
+    for provider in _geo_providers():
+        try:
+            params = {
                 "lat": lat,
-                "lng": lng,
-                "place_type": "custom",
+                "lon": lng,
+                "format": provider["format"],
+                "addressdetails": 1,
+                "accept-language": _NOMINATIM_LANG,
+                **provider["extra"],
             }
-    except Exception:  # noqa: BLE001
-        result = None
+            with httpx.Client(timeout=8.0, headers=provider["headers"]) as client:
+                resp = client.get(f"{provider['base']}/reverse", params=params)
+                data = resp.json()
+            if isinstance(data, dict) and data.get("lat"):
+                addr = data.get("address", {}) or {}
+                result = {
+                    "place_id": f"osm-{data.get('osm_type', 'n')[0]}{data.get('osm_id', '')}",
+                    "name": (data.get("name") or data.get("display_name", "").split(",")[0]).strip()
+                    or f"Pin ({lat:.4f}, {lng:.4f})",
+                    "address": data.get("display_name", f"{lat:.5f},{lng:.5f}"),
+                    "city": addr.get("city") or addr.get("town") or addr.get("village"),
+                    "state": addr.get("state"),
+                    "lat": lat,
+                    "lng": lng,
+                    "place_type": "custom",
+                    "source": provider["source"],
+                }
+                break
+        except Exception:  # noqa: BLE001 — try the next provider
+            continue
     with _geo_lock:
         _geo_cache[key] = result
     return result
@@ -271,7 +296,8 @@ def _google_key() -> str:
 def geocode(query: str) -> Optional[dict[str, Any]]:
     """Resolve a free-text place to lat/lng.
 
-    Order: curated India catalog → free Nominatim → Google (if configured).
+    Order: curated India catalog → Google (if configured) → free
+    LocationIQ/Nominatim.
     """
     # 1. Curated catalog is authoritative for known India places (offline, and
     #    carries airport/city metadata the journey builder relies on).
@@ -306,11 +332,13 @@ def geocode(query: str) -> Optional[dict[str, Any]]:
             # Fall through to the keyless provider below.
             pass
 
-    # 3. Free OpenStreetMap Nominatim for anything not in the catalog.
-    if nominatim_enabled() and query.strip():
+    # 3. Free LocationIQ / OpenStreetMap Nominatim for anything not in the
+    #    catalog (the search itself already tries LocationIQ first, then
+    #    Nominatim, and tags the winning provider in "source").
+    if (locationiq_enabled() or nominatim_enabled()) and query.strip():
         nom = _nominatim_search(query)
         if nom:
-            return {**nom, "source": "nominatim"}
+            return nom
 
     # Last resort: unresolved.
     return None
@@ -328,6 +356,17 @@ def classify_place(text: str) -> str:
     query = re.sub(r"^the\s+", "", (text or "").strip(), flags=re.IGNORECASE)
     if not query:
         return "unknown"
+
+    # Prefer the live geocoder's admin-level rank: it distinguishes
+    # country/state/city accurately worldwide. The offline catalog uses fuzzy
+    # substring matching (e.g. "Gujarat" → a landmark inside it), which is good
+    # for routing but wrong for "is this a whole region?", so only fall back to
+    # it when no online provider is available.
+    if locationiq_enabled() or nominatim_enabled():
+        nom = _nominatim_search(query)
+        if nom and nom.get("place_rank"):
+            return str(nom["place_rank"])
+
     place = geocode(query)
     if not place:
         return "unknown"
@@ -352,16 +391,17 @@ def classify_place(text: str) -> str:
 def reverse_geocode(lat: float, lng: float) -> dict[str, Any]:
     """Resolve coordinates to a place.
 
-    Order: nearest curated catalog place (≤25 km) → free Nominatim → Google
-    (if configured) → raw coordinate pin.
+    Order: free LocationIQ/Nominatim (precise street/locality names) →
+    Google (if configured) → nearest curated catalog place (≤25 km, offline
+    fallback) → raw coordinate pin.
     """
-    best = min(
-        INDIA_PLACES,
-        key=lambda p: haversine_km(lat, lng, p["lat"], p["lng"]),
-    )
-    dist = haversine_km(lat, lng, best["lat"], best["lng"])
-    if dist < 25:
-        return {**best, "source": "nearest_catalog", "distance_to_match_km": round(dist, 2)}
+    # Live reverse geocoding first: it names the actual locality/landmark at
+    # the pin, while the offline catalog can only snap to the nearest city
+    # centroid (e.g. "Ahmedabad" instead of "Navrangpura").
+    if locationiq_enabled() or nominatim_enabled():
+        nom = _nominatim_reverse(lat, lng)
+        if nom:
+            return nom
 
     if google_maps_enabled():
         try:
@@ -386,15 +426,19 @@ def reverse_geocode(lat: float, lng: float) -> dict[str, Any]:
         except Exception:
             pass
 
-    if nominatim_enabled():
-        nom = _nominatim_reverse(lat, lng)
-        if nom:
-            return {**nom, "source": "nominatim"}
+    # Offline fallback: nearest curated catalog place within 25 km.
+    best = min(
+        INDIA_PLACES,
+        key=lambda p: haversine_km(lat, lng, p["lat"], p["lng"]),
+    )
+    dist = haversine_km(lat, lng, best["lat"], best["lng"])
+    if dist < 25:
+        return {**best, "source": "nearest_catalog", "distance_to_match_km": round(dist, 2)}
 
     return {
         "place_id": f"custom-{lat:.4f}-{lng:.4f}",
         "name": f"Pin ({lat:.4f}, {lng:.4f})",
-        "address": f"Custom location {lat:.5f}, {lng:.5f}, India",
+        "address": f"Custom location {lat:.5f}, {lng:.5f}",
         "city": None,
         "state": None,
         "lat": lat,
@@ -474,7 +518,11 @@ def resolve_origin_destination(
     """Resolve origin & destination from text and/or coordinates."""
     if origin_lat is not None and origin_lng is not None:
         origin = reverse_geocode(origin_lat, origin_lng)
-        if origin_text:
+        # A meaningful user-supplied name wins, but a generic placeholder must
+        # not hide the reverse-geocoded place name in itineraries and maps.
+        if origin_text and origin_text.strip().lower() not in {
+            "current location", "my current location", "my location", "here",
+        }:
             origin["name"] = origin_text
             origin["label"] = origin_text
     elif origin_text:

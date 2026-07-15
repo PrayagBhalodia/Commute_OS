@@ -46,6 +46,17 @@ HINGLISH_MARKERS = {
     "jaldi", "jana", "kar", "karo", "kal", "kya", "mujhe", "nahi",
     "paise", "pahuch", "sabse", "sasta", "tak", "zyada",
 }
+# Common conversational/function words that rule out treating a bare first
+# message as a place name (e.g. "That looks interesting", "What can you
+# help me with?" are chit-chat, not a destination like "Pune").
+NON_PLACE_WORDS = {
+    "what", "how", "why", "when", "who", "which", "this", "that",
+    "can", "could", "would", "should", "will", "shall", "is", "are", "am",
+    "do", "does", "did", "help", "looks", "look", "like", "interesting",
+    "please", "thanks", "thank", "you", "your", "ok", "okay", "yes", "no",
+    "good", "great", "nice", "cool", "sure", "maybe", "sorry", "want",
+    "need", "tell", "know", "think",
+}
 
 # Trip variables collected during the intent phase, in the exact order the
 # LLM wrapper (and the deterministic fallback) ask for them.
@@ -500,6 +511,15 @@ class ConversationAgent:
         )
         if deadline:
             constraints.deadline = deadline.group(1).strip()
+            # This app tracks a single time anchor per leg, so an "arrive
+            # by/before <time>" deadline also satisfies the start_time (or
+            # return_time) slot instead of being silently dropped and asked
+            # for again.
+            if state.status == "waiting_for_return_time":
+                if not constraints.return_time:
+                    constraints.return_time = constraints.deadline
+            elif not constraints.start_time:
+                constraints.start_time = constraints.deadline
 
         weights = constraints.preference_weights
         if any(word in lower for word in ("fastest", "quickest", "time", "jaldi")):
@@ -515,9 +535,36 @@ class ConversationAgent:
                 r"\b([0-9]{1,2}(?::[0-9]{2})?\s*(?:am|pm)?)\b",
                 lower,
             )
+            # "Use my current location" is a quick-reply button, not a typed
+            # place name — capturing it literally would corrupt the slot and
+            # pre-empt the device-coordinate resolution in handle(), which
+            # runs later and needs to see the slot still empty.
+            location_intent = re.search(r"\b(current location|my location)\b", lower) is not None
             if state.status == "waiting_for_origin":
-                constraints.origin = self._clean_place(text)
+                if not location_intent:
+                    constraints.origin = self._clean_place(text)
             elif state.status == "waiting_for_destination":
+                if not location_intent:
+                    constraints.destination = self._clean_place(text)
+            elif (
+                state.status == "collecting_intent"
+                and len(state.turns) == 1
+                and constraints.origin is None
+                and constraints.destination is None
+                and not location_intent
+                and not simple_time
+                and not date_value
+                and "?" not in text
+                and len(text.split()) <= 4
+                and not self._contains_any(lower, POLICY_TERMS)
+                and not self._contains_any(lower, TRAVEL_TERMS)
+                and not (set(re.findall(r"[a-z']+", lower)) & NON_PLACE_WORDS)
+            ):
+                # A bare first message ("Pune") before any question has been
+                # asked is almost always the traveller naming their
+                # destination — matching the "where are you heading?"
+                # greeting — so capture it instead of silently dropping it
+                # and asking for the origin first.
                 constraints.destination = self._clean_place(text)
             elif state.status == "waiting_for_start_date":
                 if not date_value:
@@ -528,12 +575,12 @@ class ConversationAgent:
             elif state.status == "waiting_for_return_origin":
                 if re.search(r"\b(same|wahi)\b", lower) and constraints.destination:
                     constraints.return_origin = constraints.destination
-                else:
+                elif not location_intent:
                     constraints.return_origin = self._clean_place(text)
             elif state.status == "waiting_for_return_destination":
                 if re.search(r"\b(same|wahi)\b", lower) and constraints.origin:
                     constraints.return_destination = constraints.origin
-                else:
+                elif not location_intent:
                     constraints.return_destination = self._clean_place(text)
             elif state.status == "waiting_for_return_date":
                 if not date_value and not constraints.return_date:
@@ -1244,6 +1291,8 @@ class ConversationAgent:
                 self._contains_any(lower, TRAVEL_TERMS)
                 or state.status.startswith("waiting_for_")
                 or state.status in {"awaiting_origin_choice", "choosing_legs"}
+                or state.constraints.origin is not None
+                or state.constraints.destination is not None
             )
             # Narrow broad destinations first (a state → which city? → a city
             # → where exactly?) while the destination is still being
@@ -1258,7 +1307,17 @@ class ConversationAgent:
             }
             narrowing_question = (
                 self._destination_narrowing_question(state, request.message, hinglish)
-                if is_travel and state.status in narrowing_statuses
+                if is_travel and (
+                    # Actively collecting/confirming the destination.
+                    state.status in {"collecting_intent", "waiting_for_destination"}
+                    # Or catching a "Just <place> is fine" reply that landed
+                    # while a later question (origin/location) was already
+                    # asked — only relevant mid-restore, never as a fresh ask.
+                    or (
+                        state.constraints.narrowing_prompted_for
+                        and state.status in narrowing_statuses
+                    )
+                )
                 else None
             )
             origin = state.constraints.origin

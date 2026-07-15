@@ -627,6 +627,93 @@ def test_first_prompt_with_all_details_skips_to_return_question(tmp_path, monkey
     assert response.state.status == "waiting_for_return"
 
 
+def test_first_prompt_with_arrival_deadline_fills_start_time(tmp_path, monkeypatch):
+    agent = make_agent(tmp_path, monkeypatch)
+    response = agent.handle(
+        ChatMessageRequest(
+            user_id="chat-deadline",
+            message="Plan a trip from Koramangala to Whitefield by 6pm",
+        )
+    )
+    constraints = response.state.constraints
+    assert constraints.origin == "Koramangala"
+    assert constraints.destination == "Whitefield"
+    assert constraints.deadline == "6pm"
+    # The deadline also satisfies start_time so the bot doesn't re-ask for a
+    # time already given, and only the still-missing date is requested next.
+    assert constraints.start_time == "6pm"
+    assert response.state.status == "waiting_for_start_date"
+
+
+def test_bare_first_message_captured_as_destination(tmp_path, monkeypatch):
+    agent = make_agent(tmp_path, monkeypatch)
+    response = agent.handle(
+        ChatMessageRequest(user_id="chat-bare-first", message="Pune")
+    )
+    # A standalone place name before any question has been asked is the
+    # traveller naming their destination ("where are you heading today?"),
+    # not a value that should be silently dropped. "Pune" alone is a whole
+    # city, so it's narrowed once, not asked for again from scratch.
+    assert response.state.constraints.destination == "Pune"
+    assert response.state.constraints.origin is None
+    assert response.state.status == "waiting_for_destination"
+    assert "pune" in response.message.lower()
+
+    response = agent.handle(
+        ChatMessageRequest(
+            session_id=response.session_id,
+            user_id="chat-bare-first",
+            message="Just Pune is fine",
+        )
+    )
+    assert response.state.constraints.destination == "Pune"
+    assert response.state.status in ("waiting_for_origin", "awaiting_origin_choice")
+
+    # Sharing the device location next must resolve a real origin and must
+    # not re-trigger the destination-narrowing question that was already
+    # settled by "Just Pune is fine" above.
+    response = agent.handle(
+        ChatMessageRequest(
+            session_id=response.session_id,
+            user_id="chat-bare-first",
+            message="Use my current location",
+            current_lat=23.0225,
+            current_lng=72.5714,
+        )
+    )
+    assert response.state.constraints.origin == "Ahmedabad"
+    assert response.state.constraints.destination == "Pune"
+    assert "where in pune" not in response.message.lower()
+    assert response.state.status != "waiting_for_destination"
+
+
+def test_current_location_after_destination_does_not_reask_destination(tmp_path, monkeypatch):
+    agent = make_agent(tmp_path, monkeypatch)
+    session_id = "chat-loc-after-dest"
+    state = agent.memory.get_or_create(session_id=session_id, user_id="chat-loc-after-dest")
+    # Mimic the state left behind after the destination has already been
+    # collected (e.g. by the LLM slot-filling wrapper) and the agent is now
+    # waiting for the origin.
+    state.constraints.destination = "Whitefield"
+    state.status = "waiting_for_origin"
+
+    response = agent.handle(
+        ChatMessageRequest(
+            session_id=session_id,
+            user_id="chat-loc-after-dest",
+            message="Use my current location",
+            current_lat=23.0225,
+            current_lng=72.5714,
+        )
+    )
+    # The origin must resolve to the real reverse-geocoded place, never the
+    # literal button text, and the already-known destination must not be
+    # asked for again.
+    assert response.state.constraints.origin == "Ahmedabad"
+    assert response.state.constraints.destination == "Whitefield"
+    assert response.state.status != "waiting_for_destination"
+
+
 def test_natural_language_date_is_parsed():
     from datetime import date
 

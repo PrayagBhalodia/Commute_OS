@@ -67,7 +67,11 @@ field per reply:
                         place, ask them to narrow it to a city, locality, or
                         landmark before moving on.
   3. start_date       - the date the journey starts
-  4. start_time       - the time the journey starts
+  4. start_time       - the time the journey starts. If the user only gives an
+                        arrival deadline instead ("by 6pm", "before 6 pm",
+                        "need to be there by 18:00"), use that time as
+                        start_time too — this app tracks a single time anchor
+                        per leg, so do not ask a separate question for it.
   5. return_required  - does the user need a return journey? (yes / no)
 If (and only if) return_required is true, then also collect, still one at a time:
   6. return_origin       - where the RETURN starts. It may be different from the

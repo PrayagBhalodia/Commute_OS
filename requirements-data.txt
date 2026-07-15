@@ -1,0 +1,4 @@
+# Dataset preparation and evaluation (CPU-safe)
+PyYAML>=6.0,<7
+rapidfuzz>=3.9,<4
+scikit-learn>=1.5,<2

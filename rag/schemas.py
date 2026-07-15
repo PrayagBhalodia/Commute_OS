@@ -14,6 +14,15 @@ class KnowledgeChunk(BaseModel):
     category: str
     section: str
     updated_at: str
+    title: str = ""
+    region: str = "India"
+    operator: str = ""
+    source_url: str = ""
+    source_type: str = "project-authored"
+    license: str = "project-generated"
+    retrieved_at: str = ""
+    is_simulated: bool = False
+    content_hash: str = ""
 
 
 class SearchResult(BaseModel):
@@ -23,6 +32,15 @@ class SearchResult(BaseModel):
     category: str
     section: str
     updated_at: str
+    title: str = ""
+    region: str = "India"
+    operator: str = ""
+    source_url: str = ""
+    source_type: str = "project-authored"
+    license: str = "project-generated"
+    retrieved_at: str = ""
+    is_simulated: bool = False
+    content_hash: str = ""
     score: float = Field(ge=0.0, le=1.0)
 
 

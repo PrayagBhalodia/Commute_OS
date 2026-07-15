@@ -597,3 +597,45 @@ Conversation state and planned trip IDs are process-local. The bundled corpus
 contains durable guidance, not live prices, availability, schedules, traffic,
 or service advisories. An external LLM provider and embedding model download
 are optional. All transport bookings and wallet operations remain simulated.
+
+## Dataset And Model Workflow
+
+RAG and fine-tuning are separate. RAG supplies attributed policy and journey
+guidance at runtime; it never stores live fares, availability, schedules,
+traffic, or locations. Instruction data teaches English/Hinglish conversation,
+slot extraction, tool choice, consent, wallet, and disruption behavior.
+Optional LoRA changes model behavior, but application startup never requires or
+downloads an adapter.
+
+```powershell
+pip install -r requirements-data.txt
+python -m datasets.scripts.inspect_licenses
+python -m datasets.scripts.build_all --dry-run
+python -m datasets.scripts.build_all --max-per-source 5000
+python -m rag.ingest
+python -m rag.evaluation
+python -m evaluation.chatbot_eval
+```
+
+Licensing decisions are in `docs/DATA_LICENSES.md`. AirDialogue and other
+noncommercial sources are excluded from training. Current language scope is
+English and Romanized Hinglish only.
+
+Optional adapter training requires CUDA:
+
+```powershell
+pip install -r requirements-ml.txt
+python -m finetuning.prepare_chat_template
+python -m finetuning.train_lora --config finetuning/configs/lora_config.yaml
+```
+
+For the hackathon demo, start the API and frontend, send an English or Hinglish
+journey request, select a route and per-leg options, review the composed
+journey, and explicitly approve booking. Policy questions use cited RAG;
+disruptions use deterministic replanning and reconciliation tools.
+
+Known limits: all operator inventory and money movement are simulated, runtime
+plans and chat sessions are process-local, source documents are not live service
+feeds, and Romanized-language detection is heuristic. See
+`docs/DATASET_STRATEGY.md`, `docs/RAG_DATA_PIPELINE.md`, and
+`docs/CHATBOT_TRAINING.md` for reproducible workflows.

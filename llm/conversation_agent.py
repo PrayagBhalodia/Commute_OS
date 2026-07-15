@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import date, datetime, time, timedelta, timezone
 from typing import Any
 
 from llm.client import OpenAICompatibleClient
@@ -27,8 +28,15 @@ POLICY_TERMS = {
     "connection time", "transfer guideline",
 }
 TRAVEL_TERMS = {
-    "travel", "trip", "journey", "reach", "go to", "get to", "commute",
+    "plan", "travel", "trip", "journey", "reach", "go to", "get to", "commute",
     "flight", "train", "cab", "interview", "meeting", "airport",
+    "jana", "jaana", "pahuch", "pahunch", "safar", "sasta", "jaldi",
+    "ghar se", "alternate dekho", "book kar", "wapas", "waapas",
+}
+HINGLISH_MARKERS = {
+    "aap", "abhi", "batao", "bhai", "chahiye", "dekho", "ghar", "hai",
+    "jaldi", "jana", "kar", "karo", "kal", "kya", "mujhe", "nahi",
+    "paise", "pahuch", "sabse", "sasta", "tak", "zyada",
 }
 
 
@@ -50,14 +58,21 @@ class ConversationAgent:
 
     @staticmethod
     def _clean_place(value: str) -> str:
+        value = re.sub(r"^(?:kal|aaj)\s+", "", value.strip(), flags=re.IGNORECASE)
         value = re.split(
             r"\b(?:today|tomorrow|tonight|by|before|with|carrying|"
-            r"and return|returning|for an?|prioriti[sz]e|prefer)\b",
+            r"and return|returning|for an?|prioriti[sz]e|prefer|jana|jaana|"
+            r"pahuchna|pahunchna|ke liye|kal|aaj)\b",
             value,
             maxsplit=1,
             flags=re.IGNORECASE,
         )[0]
         return value.strip(" ,.;")
+
+    @staticmethod
+    def _is_hinglish(text: str) -> bool:
+        words = set(re.findall(r"[a-z]+", text.lower()))
+        return len(words & HINGLISH_MARKERS) >= 2
 
     def _extract_constraints(self, state: ConversationState, message: str) -> None:
         text = message.strip()
@@ -92,15 +107,30 @@ class ConversationAgent:
                 if destination_only:
                     constraints.destination = self._clean_place(destination_only.group(1))
 
-        if "return" in lower or "round trip" in lower:
-            constraints.return_required = True
-        elif "one way" in lower:
+        if constraints.origin is None or constraints.destination is None:
+            hinglish_route = re.search(
+                r"\b(.+?)\s+se\s+(.+?)\s+(?:jana|jaana|pahuchna|pahunchna|"
+                r"travel|safar|jane|jaane)\b",
+                text,
+                re.IGNORECASE,
+            )
+            if hinglish_route:
+                constraints.origin = self._clean_place(hinglish_route.group(1))
+                constraints.destination = self._clean_place(hinglish_route.group(2))
+
+        if re.search(r"\b(no return|without return|one way|one-way)\b", lower):
             constraints.return_required = False
+        elif "return" in lower or "round trip" in lower or "wapas" in lower or "waapas" in lower:
+            constraints.return_required = True
+        elif state.status == "waiting_for_return" and re.search(r"\b(no|nahi)\b", lower):
+            constraints.return_required = False
+        elif state.status == "waiting_for_return" and re.search(r"\b(yes|haan|ha)\b", lower):
+            constraints.return_required = True
 
         bag = re.search(r"\b(\d+)\s*(?:bags?|suitcases?|luggage)\b", lower)
         if bag:
             constraints.luggage_count = int(bag.group(1))
-        elif re.search(r"\b(?:a|one)\s+(?:bag|suitcase)\b", lower):
+        elif re.search(r"\b(?:a|one|ek)\s+(?:bag|suitcase)\b", lower):
             constraints.luggage_count = 1
 
         passengers = re.search(
@@ -110,21 +140,33 @@ class ConversationAgent:
         if passengers:
             constraints.passenger_count = max(1, int(passengers.group(1)))
 
+        explicit_date = re.search(r"\b(20\d{2}-\d{2}-\d{2})\b", lower)
+        if explicit_date:
+            constraints.start_date = explicit_date.group(1)
+        elif "tomorrow" in lower or "kal" in lower:
+            constraints.start_date = "tomorrow"
+        elif "today" in lower or "aaj" in lower:
+            constraints.start_date = "today"
+
+        start_time = re.search(
+            r"\b(?:start(?:ing)?|depart(?:ing|ure)?|leave|at)\s+(?:at\s+)?"
+            r"([0-9]{1,2}(?::[0-9]{2})?\s*(?:am|pm)?)\b",
+            lower,
+        )
+        if start_time:
+            constraints.start_time = start_time.group(1).strip()
+
         deadline = re.search(
-            r"\b(?:by|before|at)\s+([0-9]{1,2}(?::[0-9]{2})?\s*(?:am|pm)?)\b",
+            r"\b(?:by|before)\s+([0-9]{1,2}(?::[0-9]{2})?\s*(?:am|pm)?)\b",
             lower,
         )
         if deadline:
-            constraints.deadline = deadline.group(1)
-        elif "tomorrow" in lower:
-            constraints.deadline = "tomorrow"
-        elif "today" in lower:
-            constraints.deadline = "today"
+            constraints.deadline = deadline.group(1).strip()
 
         weights = constraints.preference_weights
-        if any(word in lower for word in ("fastest", "quickest", "time")):
+        if any(word in lower for word in ("fastest", "quickest", "time", "jaldi")):
             weights["time"] = 1.0
-        if any(word in lower for word in ("cheapest", "budget", "low cost")):
+        if any(word in lower for word in ("cheapest", "budget", "low cost", "sasta")):
             weights["cost"] = 1.0
         if any(word in lower for word in ("comfort", "comfortable")):
             weights["comfort"] = 1.0
@@ -135,6 +177,18 @@ class ConversationAgent:
                 constraints.origin = self._clean_place(text)
             elif state.status == "waiting_for_destination":
                 constraints.destination = self._clean_place(text)
+            elif state.status == "waiting_for_start_date":
+                if explicit_date or any(word in lower for word in ("today", "tomorrow", "aaj", "kal")):
+                    pass
+                else:
+                    constraints.start_date = text
+            elif state.status == "waiting_for_start_time":
+                simple_time = re.search(
+                    r"\b([0-9]{1,2}(?::[0-9]{2})?\s*(?:am|pm)?)\b",
+                    lower,
+                )
+                if simple_time:
+                    constraints.start_time = simple_time.group(1).strip()
 
     @staticmethod
     def _citations(results: list[dict[str, Any]]) -> list[Citation]:
@@ -145,6 +199,10 @@ class ConversationAgent:
                 category=item["category"],
                 score=float(item["score"]),
                 excerpt=item["text"][:240],
+                source_url=item.get("source_url", ""),
+                license=item.get("license", ""),
+                updated_at=item.get("updated_at", ""),
+                is_simulated=bool(item.get("is_simulated", False)),
             )
             for item in results
         ]
@@ -187,6 +245,7 @@ class ConversationAgent:
             for index, option in enumerate(group["options"], start=1):
                 lines.append(
                     f"  {index}. {option['mode']} with {option['operator']} - "
+                    f"{option.get('metadata', {}).get('specification', 'Standard')} - "
                     f"INR {option['price']:.0f}"
                 )
         lines.append(
@@ -220,10 +279,132 @@ class ConversationAgent:
             f"Total: INR {review['total_price']:.0f}, "
             f"{review['total_duration_minutes']:.0f} min."
         )
-        lines.append(
-            "Nothing has been booked. Say 'confirm booking' only if you approve this journey and wallet debit."
-        )
         return "\n".join(lines)
+
+    @staticmethod
+    def _resolved_start(state: ConversationState, request: ChatMessageRequest) -> str | None:
+        raw_date = state.constraints.start_date
+        raw_time = state.constraints.start_time
+        if not raw_date or not raw_time:
+            return None
+        base = request.client_time or datetime.now(timezone.utc)
+        lowered_date = raw_date.lower().strip()
+        if lowered_date in {"today", "aaj"}:
+            resolved_date = base.date()
+        elif lowered_date in {"tomorrow", "kal"}:
+            resolved_date = base.date() + timedelta(days=1)
+        else:
+            try:
+                resolved_date = date.fromisoformat(raw_date.strip())
+            except ValueError:
+                match = re.fullmatch(r"(\d{1,2})[/-](\d{1,2})[/-](20\d{2})", raw_date.strip())
+                if not match:
+                    return None
+                resolved_date = date(int(match.group(3)), int(match.group(2)), int(match.group(1)))
+        cleaned_time = raw_time.lower().replace(" ", "")
+        for pattern in ("%I:%M%p", "%I%p", "%H:%M", "%H"):
+            try:
+                resolved_time = datetime.strptime(cleaned_time, pattern).time()
+                break
+            except ValueError:
+                continue
+        else:
+            return None
+        return datetime.combine(resolved_date, resolved_time, tzinfo=base.tzinfo).isoformat()
+
+    @staticmethod
+    def _apply_saved_preferences(state: ConversationState, preferences: dict[str, Any]) -> None:
+        state.saved_preferences = preferences
+        weights = state.constraints.preference_weights
+        if preferences.get("prefer_cheapest"):
+            weights["cost"] = 1.0
+        if preferences.get("prefer_fastest"):
+            weights["time"] = 1.0
+        if preferences.get("prefer_comfort"):
+            weights["comfort"] = 1.0
+        if state.constraints.luggage_count == 0:
+            state.constraints.luggage_count = int(preferences.get("luggage_default") or 0)
+
+    def _plan_ready_journey(
+        self,
+        state: ConversationState,
+        request: ChatMessageRequest,
+        trace: list[ExecutionTraceEntry],
+        tool_results: list[dict[str, Any]],
+    ) -> tuple[str, list[SuggestedAction]]:
+        start_at = self._resolved_start(state, request)
+        if start_at is None:
+            state.constraints.start_time = None
+            state.status = "waiting_for_start_time"
+            return "Please enter a valid start time, for example 9:30 AM.", []
+        goal = " ".join(turn.content for turn in state.turns[-8:] if turn.role == "user")
+        result = self._execute(
+            "plan_journey",
+            {
+                "user_id": request.user_id,
+                "goal_text": goal,
+                "origin": state.constraints.origin,
+                "origin_lat": state.constraints.origin_lat,
+                "origin_lng": state.constraints.origin_lng,
+                "destination": state.constraints.destination,
+                "appointment_time": start_at,
+                "return_required": state.constraints.return_required,
+                "passenger_count": state.constraints.passenger_count,
+                "luggage_count": state.constraints.luggage_count,
+                "preference_weights": state.constraints.preference_weights,
+            },
+            trace,
+            tool_results,
+        )
+        if not result["ok"]:
+            state.status = "planning_failed"
+            return "I could not generate journey options. Please verify the trip details and try again.", []
+        data = result["data"]
+        state.active_trip_id = data["trip_id"]
+        options = data.get("itineraries") or []
+        state.selected_itinerary_id = options[0]["itinerary_id"] if options else None
+        state.route_itinerary_id = None
+        state.selected_leg_ids = {}
+        state.status = "choosing_route" if data.get("status") == "planned" else data.get("status", "planning_failed")
+        actions = [
+            SuggestedAction(id=f"route_{index}", label=f"Route {index}", message=f"Option {index}")
+            for index in range(1, min(5, len(options)) + 1)
+        ]
+        return self._plan_summary(data), actions
+
+    def _wallet_handoff(
+        self,
+        state: ConversationState,
+        user_id: str,
+        total_price: float,
+        trace: list[ExecutionTraceEntry],
+        tool_results: list[dict[str, Any]],
+    ) -> tuple[str, SuggestedAction]:
+        result = self._execute(
+            "get_wallet_balance", {"user_id": user_id}, trace, tool_results
+        )
+        balance = float(result.get("data", {}).get("balance", 0)) if result.get("ok") else 0.0
+        state.wallet_balance = balance
+        if balance < total_price:
+            state.status = "waiting_for_wallet_topup"
+            shortfall = total_price - balance
+            return (
+                f"Your wallet balance is INR {balance:.2f}, which is INR {shortfall:.2f} short. "
+                "Please top up your wallet before proceeding.",
+                SuggestedAction(id="open_wallet", label="Open wallet", message="Open wallet", kind="link", href="/wallet"),
+            )
+        state.status = "ready_for_booking_review"
+        return (
+            f"Your wallet balance is INR {balance:.2f}, which covers this journey. "
+            "Please proceed to the Booking and Review page to finalize your trip.",
+            SuggestedAction(
+                id="booking_review",
+                label="Booking and review",
+                message="Open booking review",
+                kind="link",
+                href=f"/booking/{state.active_trip_id}",
+            ),
+        )
 
     @staticmethod
     def _booking_authorized(text: str) -> bool:
@@ -275,6 +456,8 @@ class ConversationAgent:
                 ),
             }
         )
+        wallet = self.registry.orchestrator.wallet.get_balance(request.user_id)
+        preferences = self.registry.orchestrator.get_preferences(request.user_id)
         messages.append(
             {
                 "role": "system",
@@ -282,7 +465,9 @@ class ConversationAgent:
                     "Runtime context: server/client time="
                     f"{request.client_time.isoformat() if request.client_time else 'not supplied'}, "
                     f"timezone={request.timezone or 'not supplied'}, "
-                    f"device location shared={request.current_lat is not None}."
+                    f"device location shared={request.current_lat is not None}, "
+                    f"wallet_balance_inr={wallet.balance:.2f}, "
+                    f"saved_preferences={preferences.model_dump_json(exclude_none=True)}."
                 ),
             }
         )
@@ -304,26 +489,22 @@ class ConversationAgent:
             payload = dict(call.arguments)
             payload.setdefault("user_id", request.user_id)
             if call.name == "confirm_booking":
-                if not self._booking_authorized(request.message):
-                    trace.append(
-                        ExecutionTraceEntry(
-                            event="waiting_for_consent",
-                            tool=call.name,
-                            status="blocked",
-                            detail="Provider tool call lacked explicit user consent.",
-                        )
+                trace.append(
+                    ExecutionTraceEntry(
+                        event="waiting_for_consent",
+                        tool=call.name,
+                        status="blocked",
+                        detail="Booking consent is completed on the Booking and Review page.",
                     )
-                    continue
-                payload.setdefault("trip_id", state.active_trip_id)
-                payload.setdefault("itinerary_id", state.selected_itinerary_id)
-                payload["user_confirmed"] = True
-            if call.name == "top_up_wallet" and not self._topup_authorized(request.message):
+                )
+                continue
+            if call.name == "top_up_wallet":
                 trace.append(
                     ExecutionTraceEntry(
                         event="approval_required",
                         tool=call.name,
                         status="blocked",
-                        detail="Explicit top-up amount and approval required.",
+                        detail="VoyageAI cannot mutate the wallet; use the wallet page.",
                     )
                 )
                 continue
@@ -386,6 +567,7 @@ class ConversationAgent:
         journey_review: dict[str, Any] | None = None
         self._extract_constraints(state, request.message)
         lower = request.message.lower()
+        hinglish = self._is_hinglish(request.message)
         answer: str | None = None
         mode = "deterministic_fallback"
 
@@ -412,23 +594,33 @@ class ConversationAgent:
                 answer = f"Your simulated DMOS wallet balance is INR {balance:.2f}."
 
         elif self._topup_authorized(request.message):
-            amount_match = re.search(r"(?:inr|rs\.?|₹)?\s*(\d+(?:\.\d+)?)", lower)
-            amount = float(amount_match.group(1)) if amount_match else 0.0
-            result = self._execute(
-                "top_up_wallet",
-                {
-                    "user_id": request.user_id,
-                    "amount": amount,
-                    "trip_id": state.active_trip_id or "wallet",
-                    "idempotency_key": f"chat-{state.session_id}-topup-{len(state.turns)}",
-                },
-                trace,
-                tool_results,
+            answer = "I cannot change your wallet from chat. Please use the wallet page to review and approve a top-up."
+            suggested_actions.append(
+                SuggestedAction(
+                    id="open_wallet", label="Open wallet", message="Open wallet",
+                    kind="link", href="/wallet",
+                )
             )
-            answer = (
-                f"Top-up completed. Balance is INR {result['data']['balance']:.2f}."
-                if result["ok"]
-                else f"I could not complete the top-up: {result.get('message', result.get('error'))}."
+
+        elif state.status == "waiting_for_preference_choice" and re.search(
+            r"\b(usual|saved|default)\b", lower
+        ):
+            state.preference_mode = "usual"
+            result = self._execute(
+                "get_user_preferences", {"user_id": request.user_id}, trace, tool_results
+            )
+            if result["ok"]:
+                self._apply_saved_preferences(state, result["data"])
+            answer, suggested_actions = self._plan_ready_journey(
+                state, request, trace, tool_results
+            )
+
+        elif state.status == "waiting_for_preference_choice" and re.search(
+            r"\b(custom|explicit|specify|this trip|different)\b", lower
+        ):
+            state.preference_mode = "custom"
+            answer, suggested_actions = self._plan_ready_journey(
+                state, request, trace, tool_results
             )
 
         elif re.search(r"\bleg\s*(\d+)\s+option\s*(\d+)\b", lower):
@@ -456,31 +648,38 @@ class ConversationAgent:
                     answer = "That leg option is not available for the selected route."
                 else:
                     state.selected_leg_ids[leg_number] = group["options"][option_number - 1]["leg_id"]
-                    composed = self._execute(
-                        "compose_journey",
-                        {
-                            "trip_id": state.active_trip_id,
-                            "route_itinerary_id": state.route_itinerary_id,
-                            "selected_leg_ids": state.selected_leg_ids,
-                            "user_id": request.user_id,
-                        },
-                        trace,
-                        tool_results,
-                    )
-                    if composed["ok"]:
-                        itinerary = composed["data"]
-                        state.selected_itinerary_id = itinerary["itinerary_id"]
-                        state.status = "waiting_for_consent"
-                        journey_review = self._journey_review(itinerary)
-                        answer = self._review_summary(itinerary)
-                        suggested_actions.append(
-                            SuggestedAction(
-                                id="confirm_booking",
-                                label="Confirm booking",
-                                message="Confirm booking",
-                                kind="confirm",
-                            )
+                    if state.preference_mode == "custom" and len(state.selected_leg_ids) < len(leg_option_groups):
+                        remaining = next(
+                            item["leg_number"] for item in leg_option_groups
+                            if item["leg_number"] not in state.selected_leg_ids
                         )
+                        state.status = "choosing_legs"
+                        answer = f"Leg {leg_number} preference saved. Please choose an option for leg {remaining}."
+                    else:
+                        composed = self._execute(
+                            "compose_journey",
+                            {
+                                "trip_id": state.active_trip_id,
+                                "route_itinerary_id": state.route_itinerary_id,
+                                "selected_leg_ids": state.selected_leg_ids,
+                                "user_id": request.user_id,
+                            },
+                            trace,
+                            tool_results,
+                        )
+                        if composed["ok"]:
+                            itinerary = composed["data"]
+                            state.selected_itinerary_id = itinerary["itinerary_id"]
+                            journey_review = self._journey_review(itinerary)
+                            wallet_message, wallet_action = self._wallet_handoff(
+                                state,
+                                request.user_id,
+                                float(itinerary.get("total_price", 0)),
+                                trace,
+                                tool_results,
+                            )
+                            answer = f"{self._review_summary(itinerary)}\n{wallet_message}"
+                            suggested_actions.append(wallet_action)
 
         elif re.search(r"\boption\s*([1-5])\b", lower):
             number = int(re.search(r"\boption\s*([1-5])\b", lower).group(1))
@@ -492,10 +691,14 @@ class ConversationAgent:
             if plan and number <= len(plan.itineraries):
                 state.selected_itinerary_id = plan.itineraries[number - 1].itinerary_id
                 state.route_itinerary_id = state.selected_itinerary_id
-                state.selected_leg_ids = {
-                    index: leg.leg_id
-                    for index, leg in enumerate(plan.itineraries[number - 1].legs, start=1)
-                }
+                state.selected_leg_ids = (
+                    {}
+                    if state.preference_mode == "custom"
+                    else {
+                        index: leg.leg_id
+                        for index, leg in enumerate(plan.itineraries[number - 1].legs, start=1)
+                    }
+                )
                 state.status = "choosing_legs"
                 result = self._execute(
                     "get_leg_options",
@@ -511,13 +714,14 @@ class ConversationAgent:
                 itinerary = plan.itineraries[number - 1].model_dump(mode="json")
                 journey_review = self._journey_review(itinerary)
                 answer = self._leg_options_summary(leg_option_groups)
-                suggested_actions.append(
-                    SuggestedAction(
-                        id="review_journey",
-                        label="Review defaults",
-                        message="Review journey",
+                if state.preference_mode != "custom":
+                    suggested_actions.append(
+                        SuggestedAction(
+                            id="review_journey",
+                            label="Review saved defaults",
+                            message="Review journey",
+                        )
                     )
-                )
             else:
                 answer = "That option is not available in the active plan."
 
@@ -530,11 +734,15 @@ class ConversationAgent:
             if itinerary:
                 raw = itinerary.model_dump(mode="json")
                 journey_review = self._journey_review(raw)
-                state.status = "waiting_for_consent"
-                answer = self._review_summary(raw)
-                suggested_actions.append(
-                    SuggestedAction(id="confirm_booking", label="Confirm booking", message="Confirm booking", kind="confirm")
+                wallet_message, wallet_action = self._wallet_handoff(
+                    state,
+                    request.user_id,
+                    float(raw.get("total_price", 0)),
+                    trace,
+                    tool_results,
                 )
+                answer = f"{self._review_summary(raw)}\n{wallet_message}"
+                suggested_actions.append(wallet_action)
             else:
                 answer = "The selected journey is no longer available. Please plan again."
 
@@ -542,32 +750,16 @@ class ConversationAgent:
             if not state.active_trip_id or not state.selected_itinerary_id:
                 answer = "There is no active itinerary to book. Plan a journey first."
             else:
-                result = self._execute(
-                    "confirm_booking",
-                    {
-                        "trip_id": state.active_trip_id,
-                        "itinerary_id": state.selected_itinerary_id,
-                        "user_id": request.user_id,
-                        "user_confirmed": True,
-                        "idempotency_key": (
-                            f"chat-{state.active_trip_id}-"
-                            f"{state.selected_itinerary_id}"
-                        ),
-                    },
-                    trace,
-                    tool_results,
-                )
-                status = result.get("data", {}).get("status") if result["ok"] else None
-                if status == "confirmed":
-                    state.status = "booked"
-                    answer = "The simulated journey booking is confirmed."
-                elif status == "duplicate_blocked":
-                    answer = "That trip is already booked; no duplicate booking was made."
-                else:
-                    answer = (
-                        "The booking was not confirmed: "
-                        f"{result.get('data', {}).get('message') or result.get('message') or result.get('error')}."
+                answer = "For safety, finalize consent and booking on the Booking and Review page."
+                suggested_actions.append(
+                    SuggestedAction(
+                        id="booking_review",
+                        label="Booking and review",
+                        message="Open booking review",
+                        kind="link",
+                        href=f"/booking/{state.active_trip_id}",
                     )
+                )
 
         elif any(word in lower for word in ("disruption", "delayed", "cancelled", "canceled")):
             if not state.active_trip_id:
@@ -609,87 +801,64 @@ class ConversationAgent:
                     state.constraints.origin_lng = request.current_lng
                     state.status = "waiting_for_destination"
                     if destination:
-                        answer = f"Current location received. Your destination is {destination}. Shall I generate the journey options now?"
-                        suggested_actions.append(
-                            SuggestedAction(id="plan_now", label="Generate options", message="Plan the journey now")
-                        )
+                        if not state.constraints.start_date:
+                            state.status = "waiting_for_start_date"
+                            answer = f"Current location received. What date would you like to start your journey to {destination}?"
+                        else:
+                            state.status = "waiting_for_start_time"
+                            answer = "Current location received. What time would you like to start?"
                     else:
-                        answer = "Current location received. Where do you need to go?"
+                        answer = "Current location mil gaya. Kahan jana hai?" if hinglish else "Current location received. Where do you need to go?"
                 elif wants_current:
                     state.status = "waiting_for_location_permission"
-                    answer = "Please allow location access in your browser, or enter your starting location manually."
+                    answer = ("Browser mein location allow karo, ya starting location manually enter karo." if hinglish else "Please allow location access in your browser, or enter your starting location manually.")
                     suggested_actions.extend([
                         SuggestedAction(id="share_location", label="Share current location", message="Use my current location", kind="location"),
                         SuggestedAction(id="manual_origin", label="Enter manually", message="I will enter my starting location manually"),
                     ])
                 elif wants_manual:
                     state.status = "waiting_for_origin"
-                    answer = "Enter your starting location."
+                    answer = "Starting location enter karo." if hinglish else "Enter your starting location."
                 else:
                     state.status = "awaiting_origin_choice"
-                    answer = "Would you like to start from your current location, or enter a location manually?"
+                    answer = ("Current location se start karna hai ya location manually enter karoge?" if hinglish else "Would you like to start from your current location, or enter a location manually?")
                     suggested_actions.extend([
                         SuggestedAction(id="share_location", label="Use current location", message="Use my current location", kind="location"),
                         SuggestedAction(id="manual_origin", label="Enter manually", message="I will enter my starting location manually"),
                     ])
             elif is_travel and not destination:
                 state.status = "waiting_for_destination"
-                answer = "Where do you need to go?"
+                answer = "Kahan jana hai?" if hinglish else "Where do you need to go?"
+            elif is_travel and origin and destination and not state.constraints.start_date:
+                state.status = "waiting_for_start_date"
+                answer = "What date would you like to start your journey?"
+            elif is_travel and origin and destination and not state.constraints.start_time:
+                state.status = "waiting_for_start_time"
+                answer = "What time would you like to start?"
+            elif is_travel and origin and destination and state.constraints.return_required is None:
+                state.status = "waiting_for_return"
+                answer = "Do you need a return journey?"
+                suggested_actions.extend(
+                    [
+                        SuggestedAction(id="return_yes", label="Yes, return", message="Yes, I need a return journey"),
+                        SuggestedAction(id="return_no", label="No, one way", message="No, this is one way"),
+                    ]
+                )
+            elif is_travel and origin and destination and state.preference_mode is None:
+                state.status = "waiting_for_preference_choice"
+                answer = "Would you like to use your usual saved preferences, or specify preferences for this trip?"
+                suggested_actions.extend(
+                    [
+                        SuggestedAction(id="usual_preferences", label="Use usual", message="Use my usual saved preferences"),
+                        SuggestedAction(id="custom_preferences", label="Specify this trip", message="I want custom preferences for this trip"),
+                    ]
+                )
             elif is_travel and origin and destination:
-                goal = " ".join(
-                    turn.content for turn in state.turns[-4:] if turn.role == "user"
+                answer, suggested_actions = self._plan_ready_journey(
+                    state, request, trace, tool_results
                 )
-                result = self._execute(
-                    "plan_journey",
-                    {
-                        "user_id": request.user_id,
-                        "goal_text": goal,
-                        "origin": origin,
-                        "origin_lat": state.constraints.origin_lat,
-                        "origin_lng": state.constraints.origin_lng,
-                        "destination": destination,
-                        "return_required": state.constraints.return_required,
-                        "passenger_count": state.constraints.passenger_count,
-                        "luggage_count": state.constraints.luggage_count,
-                        "preference_weights": state.constraints.preference_weights,
-                    },
-                    trace,
-                    tool_results,
-                )
-                if result["ok"]:
-                    data = result["data"]
-                    state.active_trip_id = data["trip_id"]
-                    options = data.get("itineraries") or []
-                    state.selected_itinerary_id = (
-                        options[0]["itinerary_id"] if options else None
-                    )
-                    state.route_itinerary_id = None
-                    state.selected_leg_ids = {}
-                    state.status = (
-                        "waiting_for_consent"
-                        if data.get("status") == "planned"
-                        else data.get("status", "collecting_intent")
-                    )
-                    if state.status == "waiting_for_consent":
-                        trace.append(
-                            ExecutionTraceEntry(
-                                event="waiting_for_consent",
-                                tool="confirm_booking",
-                                detail=(
-                                    "Ranked options are ready; explicit booking "
-                                    "consent is required."
-                                ),
-                            )
-                        )
-                    answer = self._plan_summary(data)
-                    suggested_actions.extend(
-                        SuggestedAction(
-                            id=f"route_{index}",
-                            label=f"Route {index}",
-                            message=f"Option {index}",
-                        )
-                        for index in range(1, min(5, len(options)) + 1)
-                    )
+            elif re.search(r"\b(hi|hello|hey|namaste)\b", lower):
+                answer = "Hi, where are you heading today?"
 
         if answer is None:
             answer, mode = self._provider_turn(

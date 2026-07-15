@@ -80,7 +80,7 @@ class LocalEmbedder:
 
 
 class ChromaVectorStore:
-    collection_name = "dmos_knowledge"
+    collection_name = "dmos_knowledge_v2"
 
     def __init__(
         self,
@@ -107,6 +107,12 @@ class ChromaVectorStore:
     def count(self) -> int:
         return int(self.collection.count())
 
+    def close(self) -> None:
+        """Release Chroma's SQLite handle, especially important on Windows."""
+        system = getattr(self.client, "_system", None)
+        if system is not None and hasattr(system, "stop"):
+            system.stop()
+
     def existing_ids(self, ids: Iterable[str]) -> set[str]:
         values = list(ids)
         if not values:
@@ -130,6 +136,15 @@ class ChromaVectorStore:
                     "category": chunk.category,
                     "section": chunk.section,
                     "updated_at": chunk.updated_at,
+                    "title": chunk.title,
+                    "region": chunk.region,
+                    "operator": chunk.operator,
+                    "source_url": chunk.source_url,
+                    "source_type": chunk.source_type,
+                    "license": chunk.license,
+                    "retrieved_at": chunk.retrieved_at,
+                    "is_simulated": chunk.is_simulated,
+                    "content_hash": chunk.content_hash,
                 }
                 for chunk in chunks
             ],
@@ -170,6 +185,15 @@ class ChromaVectorStore:
                     category=str(meta.get("category", "")),
                     section=str(meta.get("section", "")),
                     updated_at=str(meta.get("updated_at", "")),
+                    title=str(meta.get("title", "")),
+                    region=str(meta.get("region", "India")),
+                    operator=str(meta.get("operator", "")),
+                    source_url=str(meta.get("source_url", "")),
+                    source_type=str(meta.get("source_type", "project-authored")),
+                    license=str(meta.get("license", "project-generated")),
+                    retrieved_at=str(meta.get("retrieved_at", "")),
+                    is_simulated=bool(meta.get("is_simulated", False)),
+                    content_hash=str(meta.get("content_hash", "")),
                     score=score,
                 )
             )

@@ -1,0 +1,14 @@
+model_name: Qwen/Qwen2.5-1.5B-Instruct
+train_file: datasets/processed/chatbot_train.jsonl
+validation_file: datasets/processed/chatbot_validation.jsonl
+output_dir: finetuning/output/commute-os-lora
+max_sequence_length: 1024
+epochs: 2
+learning_rate: 0.0002
+batch_size: 2
+gradient_accumulation_steps: 8
+lora_r: 16
+lora_alpha: 32
+lora_dropout: 0.05
+target_modules: [q_proj, k_proj, v_proj, o_proj]
+seed: 42

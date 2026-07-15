@@ -37,6 +37,14 @@ htmlcov/
 # Runtime databases (created automatically; do not commit)
 data/*.db
 data/chroma/
+datasets/raw/**
+datasets/interim/**
+datasets/processed/**
+!datasets/raw/.gitkeep
+!datasets/interim/.gitkeep
+!datasets/processed/.gitkeep
+finetuning/output/
+.run-logs/
 *.db
 
 # Logs & OS junk

@@ -31,6 +31,20 @@ def make_agent(tmp_path: Path, monkeypatch, client=None):
     )
 
 
+def complete_plan(agent, *, user_id: str, message: str):
+    response = agent.handle(ChatMessageRequest(user_id=user_id, message=message))
+    assert response.state.status == "waiting_for_start_time"
+    response = agent.handle(ChatMessageRequest(session_id=response.session_id, user_id=user_id, message="9:00 AM"))
+    assert response.state.status == "waiting_for_return"
+    response = agent.handle(ChatMessageRequest(session_id=response.session_id, user_id=user_id, message="No, this is one way"))
+    assert response.state.status == "waiting_for_preference_choice"
+    return agent.handle(
+        ChatMessageRequest(
+            session_id=response.session_id,
+            user_id=user_id,
+            message="Use my usual saved preferences",
+        )
+    )
 def test_policy_question_uses_rag(tmp_path, monkeypatch):
     agent = make_agent(tmp_path, monkeypatch)
     response = agent.handle(
@@ -47,18 +61,17 @@ def test_policy_question_uses_rag(tmp_path, monkeypatch):
 
 def test_planning_request_invokes_plan_tool(tmp_path, monkeypatch):
     agent = make_agent(tmp_path, monkeypatch)
-    response = agent.handle(
-        ChatMessageRequest(
-            user_id="chat-plan",
-            message=(
-                "Plan a trip from Ahmedabad to Jio Institute tomorrow "
-                "with one suitcase, fastest route."
-            ),
-        )
+    response = complete_plan(
+        agent,
+        user_id="chat-plan",
+        message=(
+            "Plan a trip from Ahmedabad to Jio Institute tomorrow "
+            "with one suitcase, fastest route."
+        ),
     )
 
     assert response.state.active_trip_id
-    assert response.state.status == "waiting_for_consent"
+    assert response.state.status == "choosing_route"
     assert any(item["tool"] == "plan_journey" for item in response.tool_results)
     assert any(item.event == "journey_planned" for item in response.execution_trace)
 
@@ -88,16 +101,16 @@ def test_origin_choice_requires_explicit_location_share(tmp_path, monkeypatch):
     )
     assert second.state.constraints.origin == "Current location"
     assert second.state.constraints.origin_lat == 23.0225
-    assert any(action.id == "plan_now" for action in second.suggested_actions)
+    assert second.state.status == "waiting_for_start_time"
+    assert "time" in second.message.lower()
 
 
 def test_route_then_leg_selection_composes_review(tmp_path, monkeypatch):
     agent = make_agent(tmp_path, monkeypatch)
-    planned = agent.handle(
-        ChatMessageRequest(
-            user_id="chat-legs",
-            message="Plan a trip from Ahmedabad to Jio Institute tomorrow",
-        )
+    planned = complete_plan(
+        agent,
+        user_id="chat-legs",
+        message="Plan a trip from Ahmedabad to Jio Institute tomorrow",
     )
     route = agent.handle(
         ChatMessageRequest(
@@ -117,8 +130,97 @@ def test_route_then_leg_selection_composes_review(tmp_path, monkeypatch):
         )
     )
     assert reviewed.journey_review is not None
-    assert reviewed.state.status == "waiting_for_consent"
+    assert reviewed.state.status == "waiting_for_wallet_topup"
     assert any(item["tool"] == "compose_journey" for item in reviewed.tool_results)
+    assert any(item["tool"] == "get_wallet_balance" for item in reviewed.tool_results)
+    assert any(action.href == "/wallet" for action in reviewed.suggested_actions)
+
+
+def test_sufficient_wallet_hands_off_to_booking_review(tmp_path, monkeypatch):
+    agent = make_agent(tmp_path, monkeypatch)
+    agent.registry.orchestrator.wallet.topup(
+        "chat-funded", 100000, "wallet", idempotency_key="funded-test"
+    )
+    planned = complete_plan(
+        agent,
+        user_id="chat-funded",
+        message="Plan a trip from Ahmedabad to Jio Institute tomorrow",
+    )
+    route = agent.handle(
+        ChatMessageRequest(
+            session_id=planned.session_id,
+            user_id="chat-funded",
+            message="Option 1",
+        )
+    )
+    reviewed = agent.handle(
+        ChatMessageRequest(
+            session_id=route.session_id,
+            user_id="chat-funded",
+            message="Review journey",
+        )
+    )
+
+    assert reviewed.state.status == "ready_for_booking_review"
+    assert any(
+        action.href == f"/booking/{reviewed.state.active_trip_id}"
+        for action in reviewed.suggested_actions
+    )
+
+
+def test_custom_preferences_require_every_leg_choice(tmp_path, monkeypatch):
+    agent = make_agent(tmp_path, monkeypatch)
+    first = agent.handle(
+        ChatMessageRequest(
+            user_id="chat-custom",
+            message="Plan from Ahmedabad to Jio Institute tomorrow at 9 AM, one way",
+        )
+    )
+    assert first.state.status == "waiting_for_preference_choice"
+    planned = agent.handle(
+        ChatMessageRequest(
+            session_id=first.session_id,
+            user_id="chat-custom",
+            message="I want custom preferences for this trip",
+        )
+    )
+    route = agent.handle(
+        ChatMessageRequest(
+            session_id=planned.session_id,
+            user_id="chat-custom",
+            message="Option 1",
+        )
+    )
+    assert route.leg_option_groups
+    assert not any(action.id == "review_journey" for action in route.suggested_actions)
+
+    response = route
+    for group in route.leg_option_groups:
+        response = agent.handle(
+            ChatMessageRequest(
+                session_id=route.session_id,
+                user_id="chat-custom",
+                message=f"Leg {group['leg_number']} option 1",
+            )
+        )
+    assert response.journey_review is not None
+    assert len(response.state.selected_leg_ids) == len(route.leg_option_groups)
+
+
+def test_hinglish_route_invokes_plan_tool(tmp_path, monkeypatch):
+    agent = make_agent(tmp_path, monkeypatch)
+    response = agent.handle(
+        ChatMessageRequest(
+            user_id="chat-hinglish",
+            message="Ahmedabad se Jio Institute jana hai, sabse sasta option batao",
+        )
+    )
+
+    assert response.state.constraints.origin == "Ahmedabad"
+    assert response.state.constraints.destination == "Jio Institute"
+    assert response.state.constraints.preference_weights["cost"] == 1.0
+    assert response.state.status == "waiting_for_start_date"
+    assert not response.tool_results
 
 
 class FailingClient:
@@ -131,7 +233,7 @@ class FailingClient:
 def test_llm_failure_uses_fallback_mode(tmp_path, monkeypatch):
     agent = make_agent(tmp_path, monkeypatch, client=FailingClient())
     response = agent.handle(
-        ChatMessageRequest(user_id="chat-fallback", message="Hello there")
+        ChatMessageRequest(user_id="chat-fallback", message="What can you help me with?")
     )
 
     assert response.mode == "deterministic_fallback"

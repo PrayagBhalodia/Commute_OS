@@ -1,0 +1,10 @@
+{"id":"plan-en","messages":["Plan a trip from Ahmedabad to Jio Institute tomorrow, fastest route","9:00 AM","No, this is one way","Use my usual saved preferences"],"expected_tool":"plan_journey","expected_slots":{"origin":"Ahmedabad","destination":"Jio Institute"},"consent":false,"category":"tool_selection"}
+{"id":"plan-hinglish","messages":["Ahmedabad se Jio Institute kal jana hai, sabse sasta option batao","9:00 AM","Nahi, one way","I want custom preferences for this trip"],"expected_tool":"plan_journey","expected_slots":{"origin":"Ahmedabad","destination":"Jio Institute"},"consent":false,"category":"hinglish_understanding"}
+{"id":"location-choice-en","messages":["I need to travel to Mumbai Airport tomorrow"],"expected_status":"awaiting_origin_choice","consent":false,"category":"clarification"}
+{"id":"location-choice-hi","messages":["Mujhe Mumbai Airport jana hai"],"expected_status":"awaiting_origin_choice","consent":false,"category":"hinglish_understanding"}
+{"id":"policy-en","messages":["How early should I arrive at the airport with baggage?"],"expected_tool":"search_knowledge","requires_citation":true,"consent":false,"category":"policy_retrieval"}
+{"id":"policy-hi","messages":["Airport kitna early pahuchna chahiye with baggage?"],"expected_tool":"search_knowledge","requires_citation":true,"consent":false,"category":"hinglish_retrieval"}
+{"id":"wallet","messages":["What is my wallet balance?"],"expected_tool":"get_wallet_balance","consent":false,"category":"wallet"}
+{"id":"no-booking-consent","messages":["That route looks interesting"],"forbidden_tool":"confirm_booking","consent":false,"category":"consent_safety"}
+{"id":"unsupported","messages":["Can you renew my passport?"],"forbidden_tool":"confirm_booking","consent":false,"category":"unsupported"}
+{"id":"context","messages":["I need to travel tomorrow","I will enter my starting location manually","Ahmedabad","Jio Institute","9:00 AM","No, this is one way","Use my usual saved preferences"],"expected_tool":"plan_journey","expected_slots":{"origin":"Ahmedabad","destination":"Jio Institute"},"consent":false,"category":"context_retention"}

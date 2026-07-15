@@ -2,7 +2,7 @@
 
 ## Corpus
 
-Markdown guidance lives in rag/knowledge_base. The corpus covers baggage,
+Markdown guidance lives in nested folders under rag/knowledge_base. The corpus covers baggage,
 airport transfers, metro and rail rules, cancellation/refund guidance,
 accessibility, safety, journey buffers, mode comparison, and advisory handling.
 It intentionally excludes live fares, inventory, schedules, traffic, and
@@ -17,8 +17,8 @@ python -m rag.ingest
 ~~~
 
 The ingester reads Markdown headings, groups text into roughly 400-700 character
-chunks with overlap for longer passages, and records source, category, section,
-and updated_at. A SHA-256 identity derived from source, section, and content
+chunks with overlap for longer passages, and records complete source, license,
+simulation, retrieval-date, and content-hash metadata. A SHA-256 identity derived from source, section, and content
 deduplicates chunks. Chroma upsert makes repeated ingestion idempotent.
 
 ## Embeddings

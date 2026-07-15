@@ -5,6 +5,7 @@ export interface ChatAction {
   label: string;
   message: string;
   kind: "message" | "location" | "confirm" | string;
+  href?: string | null;
 }
 
 export interface LegOptionGroup {

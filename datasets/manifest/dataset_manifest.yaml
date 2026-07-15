@@ -1,0 +1,110 @@
+manifest_version: 1
+generated_at: "2026-07-15"
+allowed_languages: [english, hinglish]
+datasets:
+  - id: schema_guided_dialog
+    name: Schema-Guided Dialogue
+    source_url: https://github.com/google-research-datasets/dstc8-schema-guided-dialogue
+    publisher: Google Research
+    license: CC-BY-SA-4.0
+    status: accepted
+    intended_use: Travel-domain dialogue state, clarification, and tool-selection examples
+    commercial_use: allowed_with_attribution_and_share_alike
+    records: 20000+
+    languages: [english]
+    relevant_fields: [dialogue_id, services, turns, frames, intents, slots]
+    download_date: null
+    redistribution_allowed: true
+    attribution_required: true
+    track: fine-tuning
+  - id: hinglish_everyday_conversations
+    name: Hinglish Everyday Conversations 1M
+    source_url: https://huggingface.co/datasets/Abhishekcr448/Hinglish-Everyday-Conversations-1M
+    publisher: Abhishek Khatri
+    license: MIT
+    status: accepted_sample_only
+    intended_use: Hinglish tone augmentation after travel relevance and quality filtering
+    commercial_use: allowed
+    records: 1001323
+    languages: [hinglish]
+    relevant_fields: [input, output]
+    download_date: null
+    redistribution_allowed: true
+    attribution_required: true
+    track: fine-tuning
+  - id: synthetic_commute_os
+    name: Commute OS English and Hinglish Synthetic Scenarios
+    source_url: repository://datasets/scripts/generate_synthetic_travel_data.py
+    publisher: Commute OS contributors
+    license: project-generated
+    status: accepted
+    intended_use: Exact journey tools, consent, wallet, disruption, and orchestration behavior
+    commercial_use: allowed_by_project_owner
+    records: generated
+    languages: [english, hinglish]
+    relevant_fields: [messages, slots, expected_action, expected_tool, consent_required, safe_execution_state]
+    download_date: "2026-07-15"
+    redistribution_allowed: true
+    attribution_required: false
+    track: fine-tuning
+  - id: air_dialogue
+    name: AirDialogue
+    source_url: https://huggingface.co/datasets/google/air_dialogue
+    publisher: Google
+    license: CC-BY-NC-4.0
+    status: evaluation_only_not_downloaded_by_default
+    intended_use: Optional non-commercial flight-dialogue evaluation
+    commercial_use: not_allowed
+    records: 400000+
+    languages: [english]
+    relevant_fields: [dialogue, intent, action, expected_action]
+    download_date: null
+    redistribution_allowed: true_with_license
+    attribution_required: true
+    track: evaluation
+  - id: akshar_hinglish_instruct
+    name: Akshar Hinglish Instruct
+    source_url: https://huggingface.co/datasets/Sujalvc/hinglish-instruct-dataset
+    publisher: Sujal Choudhari
+    license: CC-BY-NC-SA-4.0
+    status: rejected_for_training
+    intended_use: none
+    commercial_use: not_allowed
+    records: 10378
+    languages: [hinglish]
+    relevant_fields: [instruction, input, output]
+    download_date: null
+    redistribution_allowed: true_with_license
+    attribution_required: true
+    track: none
+rag_sources:
+  - id: irctc_cancellation
+    name: IRCTC E-ticket Cancellation Guidance
+    source_url: https://contents.irctc.co.in/en/eticketCancel.html
+    publisher: IRCTC
+    license: summarized_public_official_source
+    status: accepted_as_attributed_summary
+    intended_use: RAG railway cancellation guidance
+    commercial_use: summary_only
+    records: 1
+    languages: [english]
+    relevant_fields: [policy_summary]
+    download_date: "2026-07-15"
+    redistribution_allowed: summary_only
+    attribution_required: true
+    track: RAG
+  - id: india_disability_transport
+    name: Rights of Persons with Disabilities Act Section 41
+    source_url: https://www.indiacode.nic.in/show-data?actid=AC_CEN_25_54_00002_201649_1517807328299&orderno=41&sectionId=12102&sectionno=41
+    publisher: India Code
+    license: official_public_legal_source
+    status: accepted_as_attributed_summary
+    intended_use: RAG accessibility guidance
+    commercial_use: summary_only
+    records: 1
+    languages: [english]
+    relevant_fields: [legal_guidance_summary]
+    download_date: "2026-07-15"
+    redistribution_allowed: summary_only
+    attribution_required: true
+    track: RAG

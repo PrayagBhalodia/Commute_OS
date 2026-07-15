@@ -30,6 +30,8 @@ class TravelConstraints(BaseModel):
     origin_lat: float | None = None
     origin_lng: float | None = None
     destination: str | None = None
+    start_date: str | None = None
+    start_time: str | None = None
     deadline: str | None = None
     return_required: bool | None = None
     passenger_count: int = 1
@@ -46,6 +48,9 @@ class ConversationState(BaseModel):
     selected_itinerary_id: str | None = None
     route_itinerary_id: str | None = None
     selected_leg_ids: dict[int, str] = Field(default_factory=dict)
+    preference_mode: str | None = None
+    saved_preferences: dict[str, Any] = Field(default_factory=dict)
+    wallet_balance: float | None = None
     status: str = "collecting_intent"
     turns: list[ConversationTurn] = Field(default_factory=list)
     updated_at: datetime = Field(default_factory=utc_now)
@@ -57,6 +62,10 @@ class Citation(BaseModel):
     category: str
     score: float
     excerpt: str
+    source_url: str = ""
+    license: str = ""
+    updated_at: str = ""
+    is_simulated: bool = False
 
 
 class ExecutionTraceEntry(BaseModel):
@@ -84,6 +93,7 @@ class SuggestedAction(BaseModel):
     label: str
     message: str
     kind: str = "message"
+    href: str | None = None
 
 
 class ChatMessageResponse(BaseModel):

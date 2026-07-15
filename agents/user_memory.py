@@ -156,11 +156,24 @@ class UserMemoryStore:
                 prefs.avoid_modes.append(mode)
             prefs.preferred_modes = [m for m in prefs.preferred_modes if m != mode]
 
+        # The journey style the user was actually optimising for (Time / Cost /
+        # Comfort) is the strongest signal for the learned optimisation lens, so
+        # honour it directly and keep the three flags mutually coherent.
+        style = (metadata or {}).get("journey_style")
+        if style in ("time", "cost", "comfort"):
+            prefs.prefer_fastest = style == "time"
+            prefs.prefer_cheapest = style == "cost"
+            prefs.prefer_comfort = style == "comfort"
+            prefs.notes.append(f"optimising for {style}")
+
         if liked is True:
-            prefs.prefer_fastest = prefs.prefer_fastest or True
+            prefs.notes.append("liked the selected option")
         if liked is False:
-            # Slightly shift toward comfort / alternatives
+            # A thumbs-down nudges toward comfort so we surface gentler
+            # alternatives next time.
             prefs.prefer_comfort = True
+            prefs.notes.append("disliked — exploring comfier alternatives")
+        prefs.notes = prefs.notes[-20:]
 
         if rating is not None:
             if rating >= 4:

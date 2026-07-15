@@ -78,6 +78,25 @@ def test_memory_learns_from_feedback(tmp_path: Path) -> None:
     assert prefs.interaction_count >= 1
 
 
+def test_memory_learns_optimisation_lens_from_journey_style(tmp_path: Path) -> None:
+    mem = UserMemoryStore(db_path=str(tmp_path / "p.db"))
+    # The user was optimising for Comfort when they gave positive feedback, so
+    # the learned lens should switch to comfort (and drop the default fastest).
+    prefs = mem.apply_feedback(
+        "u2",
+        liked=True,
+        rating=5,
+        metadata={"journey_style": "comfort"},
+    )
+    assert prefs.prefer_comfort is True
+    assert prefs.prefer_fastest is False
+    assert prefs.prefer_cheapest is False
+    # Switching to a cost-optimised trip flips the lens again.
+    prefs = mem.apply_feedback("u2", metadata={"journey_style": "cost"})
+    assert prefs.prefer_cheapest is True
+    assert prefs.prefer_comfort is False
+
+
 def test_full_plan_confirm_book(orch: DMOSOrchestrator) -> None:
     orch.wallet.topup("u1", 20000.0, trip_id="seed")
     plan = orch.plan(

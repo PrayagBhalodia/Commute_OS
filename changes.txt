@@ -1,0 +1,144 @@
+CHANGES — Commute OS code-quality pass
+======================================
+
+[2026-07-15 15:47 IST] Wallet integrity: money is never manufactured
+  - Fixed the reported bug: with ₹40,000 in the wallet and a ₹35,000 booking,
+    triggering the disruptor rebooked a ₹45,000 replacement and confirmed it.
+    Three silent money-creation paths were removed:
+    1. agents/agent5_disruption.py auto-topped-up the wallet to force an
+       unaffordable rebooking through. Now: the cancellation + refund stand,
+       the rebooking is blocked, and the response says exactly how much to
+       top up (status cancelled_only, reconciliation action top_up_required).
+    2. The same flow then ran wallet.reconcile(), which moved the price
+       difference AGAIN on top of the real refunds and rebooking debit — a
+       double charge. The reconciliation is now an informational summary.
+    3. orchestration/orchestrator.py confirm_and_book auto-credited any
+       shortfall (need + 50). Now the confirm fails with a clear top-up
+       message; explicit top-ups still work via topup_if_needed / wallet UI.
+  - Crash-window compensation in agents/agent3_booking.py: an in_progress
+    booking row is persisted before any wallet debit, and a retry after a
+    crash refunds the orphaned debits (ledger-derived) before booking afresh.
+  - New tests/test_wallet_integrity.py covers all four behaviors.
+
+[2026-07-15 15:47 IST] Chat sessions persist across server restarts
+  - llm/conversation_memory.py now writes-through to SQLite
+    (data/chat_sessions.db, env COMMUTE_CHAT_DB); without a path it stays
+    in-process, keeping tests hermetic. api/chat_routes.py wires the server
+    path. New tests/test_chat_persistence.py.
+
+[2026-07-15 15:47 IST] Home-page chat persists until the user clears it
+  - The chat transcript, session id, and last response (action chips) moved
+    into the persisted journey store, so the conversation survives reloads
+    and navigation. A "Clear chat" button resets the transcript and deletes
+    the server-side session (new DELETE call in chat-service).
+
+[2026-07-15 15:47 IST] Plan page shows the journey summary sentence
+  - "From A to B on DD/MM at HH:MM · returning DD/MM at HH:MM · N bags"
+    rendered with the plan results, derived from the plan intent (works the
+    same whether the trip was planned in the chat or on the Plan page).
+
+[2026-07-15 15:47 IST] Chat drills broad destinations down to a place
+  - "I have to go to Gujarat" → "where in Gujarat?"; answer "Ahmedabad" →
+    "Where in Ahmedabad exactly?"; a locality/landmark answer proceeds, and
+    repeating the place or saying "just <place>" accepts it (no loops).
+  - tools/places_india.py gains an India states/UT list and
+    classify_place_specificity(); the agent tracks what it asked via a new
+    narrowing_prompted_for constraint. Three new chat-agent tests.
+
+[2026-07-15 16:10 IST] Chat start times respect the user's timezone
+  - Found during live verification: telling the chat "9:00 AM" produced an
+    appointment at 09:00 UTC (14:30 IST) because _resolved_start stamped the
+    server's UTC on the user's wall-clock time. It now resolves "today"/
+    "tomorrow" and stamps the result in the client's reported timezone.
+  - Added the tzdata package to requirements.txt: the environment's zoneinfo
+    was missing legacy aliases like Asia/Calcutta (what browsers actually
+    send), which silently fell back to UTC; Windows has no system tz data at
+    all. New regression test in tests/test_chat_agent.py.
+
+[2026-07-15 16:10 IST] Dev launch config fixed for Linux
+  - .claude/launch.json dmos-api pointed at .venv/Scripts/python.exe (a
+    Windows path) and could not start on this machine; now .venv/bin/python.
+
+[2026-07-15 15:47 IST] Fine-tuned model wired as an optional LLM provider
+  - LLM_PROVIDER=local_lora loads the LoRA adapter in-process via
+    finetuning/inference.py (LORA_ADAPTER_PATH/LORA_BASE_MODEL); if the ML
+    stack is missing the client disables itself and the deterministic
+    controller takes over. LLM_PROVIDER=local targets a local OpenAI-
+    compatible server (vLLM/llama.cpp/Ollama) with no API key required.
+    Documented in .env.example and finetuning/README.md.
+
+[2026-07-15 12:48 IST] Plans now persist across server restarts
+  - New orchestration/plan_store.py: SQLite-backed PlanStore (trip_id -> plan
+    JSON, read-through cache) replaces the in-memory dict in the orchestrator.
+    Previously every in-flight itinerary was silently lost on redeploy/restart.
+  - Orchestrator takes an optional plans_db path (env COMMUTE_PLANS_DB,
+    default data/plans.db next to the booking DB; tests stay in tmp dirs).
+  - New tests/test_plan_persistence.py proves a plan and its confirmed
+    itinerary selection survive an orchestrator restart (3 new tests).
+
+[2026-07-15 12:48 IST] Structured logging across the backend
+  - logging.basicConfig wired in api/main.py (level via COMMUTE_LOG_LEVEL,
+    default INFO).
+  - Log statements at the points that previously failed silently:
+    plan created / confirm rejected / booking outcome / disruption reported
+    (orchestrator), operator call failures (booking agent), LLM provider
+    fallback (llm/client), tool execution failures (llm/tool_registry),
+    failed logins without leaking credentials (api/auth).
+
+[2026-07-15 12:48 IST] Continuous integration added
+  - .github/workflows/ci.yml: backend job (pytest on Python 3.12, skips the
+    heavy sentence-transformers/torch install because the RAG embedder has a
+    documented hashing fallback) + frontend job (npm ci, typecheck, lint,
+    build on Node 22). Runs on push to main and on pull requests.
+
+[2026-07-15 12:48 IST] Active-page segment status is now real, not staged
+  - frontend/src/lib/segments.ts: segmentProgress() now compares each leg's
+    departure/arrival timestamps against the current time instead of the old
+    index heuristic (leg 0 = finished, leg 1 = ongoing) that only looked
+    right by coincidence. New journeyProgress() derives the overall trip
+    state (Upcoming / Ongoing / Completed) for the header badge.
+  - Active page "Now" card follows the first unfinished leg instead of
+    always showing leg 1.
+  - Honest consequence: a trip that has not started yet shows every segment
+    as Upcoming (truthful) rather than a fake in-progress snapshot.
+
+[2026-07-15 12:48 IST] Journey-style selector consolidated
+  - New frontend/src/components/shared/JourneyStyleSelector.tsx is the single
+    source of truth for the Time / Cost / Comfort selector (icons, copy,
+    styling). The Travel DNA page uses the "cards" variant and the account
+    menu uses the "segmented" variant; both were previously independent
+    implementations that could drift apart.
+
+[2026-07-15 12:48 IST] datasets/ package renamed to data_pipeline/
+  - The local package shadowed Hugging Face `datasets`, forcing a sys.path
+    manipulation hack in finetuning/train_lora.py and risking wrong-module
+    imports for any script run from the repo root. Renamed via git mv with
+    all imports, path constants, CLI defaults, configs (lora_config.yaml,
+    data/dataset_manifest.yaml), .gitignore rules, and docs updated.
+  - train_lora.py hack removed: `from datasets import load_dataset` now
+    resolves unambiguously to the Hugging Face library.
+
+[2026-07-15 12:48 IST] CORS allows any localhost port in dev
+  - api/main.py adds allow_origin_regex for http://localhost:<any port> and
+    http://127.0.0.1:<any port>. The explicit origin list only covered ports
+    3000/8501, which silently blocked local tooling (previews, ad-hoc dev
+    servers) on other ports. Remote sites cannot forge a localhost Origin,
+    so this remains dev-safe; real origins must be listed explicitly before
+    any internet-facing deployment.
+
+Verification
+  - Backend: 91/91 tests pass (88 existing + 3 new persistence tests).
+  - Deterministic chatbot/RAG eval harness: 10/10 cases pass post-rename.
+  - Frontend: tsc clean, eslint clean, next build succeeds on all routes.
+
+Known gaps deliberately deferred (each deserves its own focused change)
+  - llm/conversation_agent.py handle() is a ~340-line if/elif chain and the
+    Hinglish strings are inline ternaries; wants an intent-dispatch table
+    plus a locale map, refactored behind the existing chat-agent tests.
+  - Round trips are still stitched client-side (second plan request with
+    origin/destination swapped); the orchestrator should model them natively.
+  - Google sign-in decodes the JWT without signature verification (flagged
+    in api/auth.py docstring); wire google-auth before internet exposure.
+  - finetuning/ trains a model nothing serves yet: either wire the adapter
+    into the runtime or move the tree to a research branch.
+  - No frontend test harness; CORS origins and OTP store remain dev-only.

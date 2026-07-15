@@ -16,6 +16,9 @@ from rag.retriever import KnowledgeRetriever
 
 def make_agent(tmp_path: Path, monkeypatch, client=None):
     monkeypatch.setenv("RAG_FORCE_HASH_EMBEDDINGS", "1")
+    # Keep unit tests offline: place classification/geocoding falls back to
+    # the bundled catalog instead of calling LocationIQ/Nominatim.
+    monkeypatch.setenv("DMOS_USE_NOMINATIM", "0")
     rag_path = tmp_path / "chroma"
     index_knowledge_base(db_path=rag_path, knowledge_dir=KNOWLEDGE_DIR)
     orchestrator = DMOSOrchestrator(
@@ -285,7 +288,9 @@ def test_chat_and_rag_api_session_lifecycle(tmp_path, monkeypatch):
         profiles_db=str(tmp_path / "api-profiles.db"),
     )
     router, _ = build_chat_router(
-        orchestrator, rag_db_path=tmp_path / "api-chroma"
+        orchestrator,
+        rag_db_path=tmp_path / "api-chroma",
+        chat_db_path=tmp_path / "api-chat.db",
     )
     app = FastAPI()
     app.include_router(router)
@@ -310,3 +315,217 @@ def test_chat_and_rag_api_session_lifecycle(tmp_path, monkeypatch):
     deleted = client.delete(f"/chat/sessions/{session_id}")
     assert deleted.json()["deleted"] is True
     assert client.get(f"/chat/sessions/{session_id}").status_code == 404
+
+
+def stub_place_classifier(monkeypatch, mapping):
+    """Replace the live geocoder-backed classifier with a canned mapping,
+    mirroring what LocationIQ/Nominatim would return for these names."""
+
+    def fake_classify(text: str) -> str:
+        return mapping.get((text or "").strip().lower(), "unknown")
+
+    monkeypatch.setattr("llm.conversation_agent.classify_place", fake_classify)
+
+
+def test_state_destination_drills_to_city_then_locality(tmp_path, monkeypatch):
+    agent = make_agent(tmp_path, monkeypatch)
+    stub_place_classifier(
+        monkeypatch,
+        {"gujarat": "state", "ahmedabad": "city", "navrangpura": "specific"},
+    )
+    response = agent.handle(
+        ChatMessageRequest(user_id="drill", message="I have to travel to Gujarat")
+    )
+    assert "where in Gujarat" in response.message
+    assert response.state.status == "waiting_for_destination"
+
+    response = agent.handle(
+        ChatMessageRequest(
+            session_id=response.session_id, user_id="drill", message="Ahmedabad"
+        )
+    )
+    assert "Where in Ahmedabad" in response.message
+    assert response.state.status == "waiting_for_destination"
+
+    response = agent.handle(
+        ChatMessageRequest(
+            session_id=response.session_id, user_id="drill", message="Navrangpura"
+        )
+    )
+    assert response.state.constraints.destination == "Navrangpura"
+    assert response.state.status != "waiting_for_destination"
+
+
+def test_country_destination_prompts_narrowing(tmp_path, monkeypatch):
+    agent = make_agent(tmp_path, monkeypatch)
+    stub_place_classifier(monkeypatch, {"japan": "country"})
+    response = agent.handle(
+        ChatMessageRequest(user_id="drill-country", message="I want to travel to Japan")
+    )
+    assert "where in Japan" in response.message
+    assert "country" in response.message
+    assert response.state.status == "waiting_for_destination"
+
+
+def test_broad_destination_accepted_when_user_insists(tmp_path, monkeypatch):
+    agent = make_agent(tmp_path, monkeypatch)
+    stub_place_classifier(monkeypatch, {"goa": "state"})
+    response = agent.handle(
+        ChatMessageRequest(user_id="drill2", message="I need to go to Goa")
+    )
+    assert "where in Goa" in response.message
+
+    response = agent.handle(
+        ChatMessageRequest(
+            session_id=response.session_id, user_id="drill2", message="Just Goa is fine"
+        )
+    )
+    assert response.state.constraints.destination == "Goa"
+    assert response.state.status != "waiting_for_destination"
+
+
+def test_specific_destination_skips_drilling(tmp_path, monkeypatch):
+    agent = make_agent(tmp_path, monkeypatch)
+    stub_place_classifier(monkeypatch, {"jio institute": "specific"})
+    response = agent.handle(
+        ChatMessageRequest(
+            user_id="drill3",
+            message="I need to reach Jio Institute from Ahmedabad tomorrow",
+        )
+    )
+    assert "where in" not in response.message.lower()
+
+
+def test_return_journey_slots_collected_one_at_a_time(tmp_path, monkeypatch):
+    agent = make_agent(tmp_path, monkeypatch)
+    response = agent.handle(
+        ChatMessageRequest(
+            user_id="chat-return",
+            message="Plan a trip from Ahmedabad to Jio Institute tomorrow",
+        )
+    )
+    assert response.state.status == "waiting_for_start_time"
+
+    response = agent.handle(
+        ChatMessageRequest(
+            session_id=response.session_id, user_id="chat-return", message="9:00 AM"
+        )
+    )
+    assert response.state.status == "waiting_for_return"
+
+    response = agent.handle(
+        ChatMessageRequest(
+            session_id=response.session_id,
+            user_id="chat-return",
+            message="Yes, I need a return journey",
+        )
+    )
+    assert response.state.constraints.return_required is True
+    assert response.state.status == "waiting_for_return_origin"
+
+    response = agent.handle(
+        ChatMessageRequest(
+            session_id=response.session_id,
+            user_id="chat-return",
+            message="Same as Jio Institute",
+        )
+    )
+    assert response.state.constraints.return_origin == "Jio Institute"
+    assert response.state.status == "waiting_for_return_destination"
+
+    # The return can end somewhere other than the onward origin.
+    response = agent.handle(
+        ChatMessageRequest(
+            session_id=response.session_id,
+            user_id="chat-return",
+            message="Gandhinagar",
+        )
+    )
+    assert response.state.constraints.return_destination == "Gandhinagar"
+    assert response.state.status == "waiting_for_return_date"
+
+    response = agent.handle(
+        ChatMessageRequest(
+            session_id=response.session_id,
+            user_id="chat-return",
+            message="2026-07-20",
+        )
+    )
+    assert response.state.constraints.return_date == "2026-07-20"
+    # The onward start date must not be clobbered by the return date answer.
+    assert response.state.constraints.start_date == "tomorrow"
+    assert response.state.status == "waiting_for_return_time"
+
+    response = agent.handle(
+        ChatMessageRequest(
+            session_id=response.session_id, user_id="chat-return", message="6 pm"
+        )
+    )
+    assert response.state.constraints.return_time == "6 pm"
+    assert response.state.constraints.start_time == "9:00 am"
+    assert response.state.status == "waiting_for_preference_choice"
+
+    response = agent.handle(
+        ChatMessageRequest(
+            session_id=response.session_id,
+            user_id="chat-return",
+            message="Use my usual saved preferences",
+        )
+    )
+    assert response.state.status == "choosing_route"
+    assert response.state.active_trip_id
+
+
+def test_first_prompt_with_all_details_skips_to_return_question(tmp_path, monkeypatch):
+    agent = make_agent(tmp_path, monkeypatch)
+    response = agent.handle(
+        ChatMessageRequest(
+            user_id="chat-full",
+            message="Plan a trip from Ahmedabad to Jio Institute on 2026-08-01 at 9 am",
+        )
+    )
+    constraints = response.state.constraints
+    assert constraints.origin == "Ahmedabad"
+    assert constraints.destination == "Jio Institute"
+    assert constraints.start_date == "2026-08-01"
+    assert constraints.start_time == "9 am"
+    assert response.state.status == "waiting_for_return"
+
+
+def test_natural_language_date_is_parsed():
+    from datetime import date
+
+    from llm.conversation_agent import ConversationAgent
+
+    base = date(2026, 7, 15)
+    assert ConversationAgent._parse_date_expr("20 July", base) == date(2026, 7, 20)
+    assert ConversationAgent._parse_date_expr("20th July 2026", base) == date(2026, 7, 20)
+    assert ConversationAgent._parse_date_expr("July 20", base) == date(2026, 7, 20)
+    assert ConversationAgent._parse_date_expr("20/08/2026", base) == date(2026, 8, 20)
+    # A bare month/day already past this year rolls to the next year.
+    assert ConversationAgent._parse_date_expr("10 January", base) == date(2027, 1, 10)
+    assert ConversationAgent._parse_date_expr("gibberish", base) is None
+
+
+def test_start_time_resolves_in_client_timezone():
+    from datetime import datetime, timezone as tz
+
+    from llm.conversation_agent import ConversationAgent
+    from llm.schemas import ConversationState, TravelConstraints
+
+    state = ConversationState(
+        session_id="s",
+        user_id="u",
+        constraints=TravelConstraints(start_date="tomorrow", start_time="9:00 AM"),
+    )
+    request = ChatMessageRequest(
+        user_id="u",
+        message="9:00 AM",
+        client_time=datetime(2026, 7, 15, 10, 0, tzinfo=tz.utc),
+        timezone="Asia/Kolkata",
+    )
+    resolved = ConversationAgent._resolved_start(state, request)
+    # 9 AM on the user's clock (IST), not 9 AM UTC (= 14:30 IST).
+    assert resolved is not None
+    assert resolved.endswith("+05:30")
+    assert "T09:00:00" in resolved

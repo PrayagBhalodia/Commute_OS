@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 
-from datasets.scripts.common import scenario_fingerprint
+from data_pipeline.scripts.common import scenario_fingerprint
 
 
 def split_records(records: list[dict]) -> dict[str, list[dict]]:

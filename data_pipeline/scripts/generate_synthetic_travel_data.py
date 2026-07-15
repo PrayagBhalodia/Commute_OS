@@ -6,7 +6,7 @@ import argparse
 import hashlib
 from typing import Any
 
-from datasets.scripts.common import SYSTEM_MESSAGE, validate_record, write_jsonl
+from data_pipeline.scripts.common import SYSTEM_MESSAGE, validate_record, write_jsonl
 
 
 WORKFLOWS: list[dict[str, Any]] = [
@@ -120,7 +120,7 @@ def generate_records(variants: int = 2) -> list[dict[str, Any]]:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--variants", type=int, default=2)
-    parser.add_argument("--output", default="datasets/interim/synthetic.jsonl")
+    parser.add_argument("--output", default="data_pipeline/interim/synthetic.jsonl")
     args = parser.parse_args()
     records = generate_records(args.variants)
     write_jsonl(__import__("pathlib").Path(args.output), records)

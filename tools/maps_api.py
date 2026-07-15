@@ -2,8 +2,9 @@
 
 Geocoding provider order (each optional, always degrades gracefully):
   1. Offline India place catalog  — fast, curated, works with zero config.
-  2. OpenStreetMap Nominatim       — free, no API key, for unknown free text.
-  3. Google Maps                   — only when GOOGLE_MAPS_API_KEY is set.
+  2. LocationIQ                    — free API key (LOCATIONIQ_API_KEY in .env).
+  3. OpenStreetMap Nominatim       — free, no API key, for unknown free text.
+  4. Google Maps                   — only when GOOGLE_MAPS_API_KEY is set.
 Distances always use the offline haversine + speed model unless Google's
 Distance Matrix is configured.
 """
@@ -12,12 +13,12 @@ from __future__ import annotations
 
 import math
 import os
+import re
 import threading
 from typing import Any, Optional
 
 from tools.places_india import (
     INDIA_PLACES,
-    get_place_by_id,
     list_places,
     nearest_airport,
     resolve_place_name,
@@ -30,8 +31,22 @@ except ImportError:  # pragma: no cover
 
 
 # ---------------------------------------------------------------------------
+# LocationIQ (free API key, Nominatim-compatible responses) and
 # OpenStreetMap / Nominatim (free geocoder, no API key required)
 # ---------------------------------------------------------------------------
+
+_LOCATIONIQ_BASE = os.environ.get(
+    "LOCATIONIQ_BASE_URL", "https://us1.locationiq.com/v1"
+).rstrip("/")
+
+
+def _locationiq_key() -> str:
+    return os.environ.get("LOCATIONIQ_API_KEY", "").strip()
+
+
+def locationiq_enabled() -> bool:
+    return bool(_locationiq_key()) and httpx is not None
+
 
 _NOMINATIM_BASE = os.environ.get(
     "NOMINATIM_BASE_URL", "https://nominatim.openstreetmap.org"
@@ -56,6 +71,40 @@ _LOCALITY_OSM_TYPES = {
     "administrative",
 }
 _POI_OSM_CLASSES = {"shop", "amenity", "tourism", "leisure", "office", "craft"}
+
+# OSM types that mark a result as a whole administrative region rather than a
+# routable point. Drives the chat agent's "where in <place>?" follow-ups for
+# any country/state/city worldwide, replacing the old hardcoded India lists.
+_STATE_OSM_TYPES = {"state", "province", "region"}
+_CITY_OSM_TYPES = {"city", "town", "municipality"}
+
+
+def _osm_place_rank(
+    candidate: dict[str, Any], address: dict[str, Any], fallback_name: str = ""
+) -> str:
+    """Coarse specificity of an OSM result: country / state / city / specific."""
+    addresstype = (candidate.get("addresstype") or "").lower()
+    osm_type = (candidate.get("type") or "").lower()
+    for value in (addresstype, osm_type):
+        if value == "country":
+            return "country"
+        if value in _STATE_OSM_TYPES:
+            return "state"
+        if value in _CITY_OSM_TYPES:
+            return "city"
+    if (candidate.get("class") or "") == "boundary" and osm_type == "administrative":
+        # Admin boundary without an addresstype (e.g. LocationIQ's v1 JSON):
+        # infer the level from which address component carries the same name.
+        name = (candidate.get("name") or fallback_name or "").strip().lower()
+        if name and (address.get("country") or "").lower() == name:
+            return "country"
+        if name and (address.get("state") or address.get("region") or "").lower() == name:
+            return "state"
+        if name and (
+            address.get("city") or address.get("town") or address.get("municipality") or ""
+        ).lower() == name:
+            return "city"
+    return "specific"
 
 
 def _score_nominatim_candidate(candidate: dict[str, Any], query_lower: str) -> tuple[int, int]:
@@ -99,19 +148,32 @@ def nominatim_enabled() -> bool:
     return flag not in ("0", "false", "no", "off") and httpx is not None
 
 
+def _osm_endpoint(path: str) -> tuple[str, dict[str, Any], dict[str, str]]:
+    """URL, extra params, and headers for an OSM-style geocode request.
+
+    LocationIQ (keyed, higher limits) when LOCATIONIQ_API_KEY is set,
+    otherwise the public Nominatim instance.
+    """
+    if locationiq_enabled():
+        return f"{_LOCATIONIQ_BASE}{path}", {"key": _locationiq_key()}, {}
+    return f"{_NOMINATIM_BASE}{path}", {}, {"User-Agent": _NOMINATIM_UA}
+
+
 def _nominatim_search(query: str) -> Optional[dict[str, Any]]:
-    """Free-text geocode via Nominatim; cached, None on any failure."""
+    """Free-text geocode via LocationIQ/Nominatim; cached, None on failure."""
     key = f"s:{query.strip().lower()}"
     with _geo_lock:
         if key in _geo_cache:
             return _geo_cache[key]
     result: Optional[dict[str, Any]] = None
     try:
+        url, extra, headers = _osm_endpoint("/search")
         params: dict[str, Any] = {
             "q": query,
             "format": "jsonv2",
             "limit": 5,
             "addressdetails": 1,
+            **extra,
         }
         # Geocode worldwide by default so international destinations (e.g.
         # "Japan") resolve to the real country rather than a same-named place
@@ -121,8 +183,8 @@ def _nominatim_search(query: str) -> Optional[dict[str, Any]]:
         if _cc:
             params["countrycodes"] = _cc
         params["accept-language"] = _NOMINATIM_LANG
-        with httpx.Client(timeout=8.0, headers={"User-Agent": _NOMINATIM_UA}) as client:
-            resp = client.get(f"{_NOMINATIM_BASE}/search", params=params)
+        with httpx.Client(timeout=8.0, headers=headers) as client:
+            resp = client.get(url, params=params)
             data = resp.json()
         if isinstance(data, list) and data:
             r0 = _pick_best_nominatim_result(data, query)
@@ -137,6 +199,7 @@ def _nominatim_search(query: str) -> Optional[dict[str, Any]]:
                 "lat": float(r0["lat"]),
                 "lng": float(r0["lon"]),
                 "place_type": "custom",
+                "place_rank": _osm_place_rank(r0, addr, query),
                 "metadata": {"osm_class": r0.get("class"), "osm_type_detail": r0.get("type")},
             }
     except Exception:  # noqa: BLE001
@@ -154,15 +217,17 @@ def _nominatim_reverse(lat: float, lng: float) -> Optional[dict[str, Any]]:
             return _geo_cache[key]
     result: Optional[dict[str, Any]] = None
     try:
+        url, extra, headers = _osm_endpoint("/reverse")
         params = {
             "lat": lat,
             "lon": lng,
             "format": "jsonv2",
             "addressdetails": 1,
             "accept-language": _NOMINATIM_LANG,
+            **extra,
         }
-        with httpx.Client(timeout=8.0, headers={"User-Agent": _NOMINATIM_UA}) as client:
-            resp = client.get(f"{_NOMINATIM_BASE}/reverse", params=params)
+        with httpx.Client(timeout=8.0, headers=headers) as client:
+            resp = client.get(url, params=params)
             data = resp.json()
         if isinstance(data, dict) and data.get("lat"):
             addr = data.get("address", {}) or {}
@@ -249,6 +314,39 @@ def geocode(query: str) -> Optional[dict[str, Any]]:
 
     # Last resort: unresolved.
     return None
+
+
+def classify_place(text: str) -> str:
+    """How narrowly free-text pins a place, for any region worldwide.
+
+    Returns "country", "state", "city", "specific" (locality/landmark/
+    address/POI), or "unknown" (could not resolve). Uses the same provider
+    chain as ``geocode`` (catalog → LocationIQ/Nominatim → Google), so the
+    chat agent's "where in <place>?" drill-down works for any country,
+    state, or city instead of a hardcoded list.
+    """
+    query = re.sub(r"^the\s+", "", (text or "").strip(), flags=re.IGNORECASE)
+    if not query:
+        return "unknown"
+    place = geocode(query)
+    if not place:
+        return "unknown"
+    rank = place.get("place_rank")
+    if rank:
+        return str(rank)
+    google_types = (place.get("metadata") or {}).get("google_types") or []
+    if "country" in google_types:
+        return "country"
+    if "administrative_area_level_1" in google_types:
+        return "state"
+    if "locality" in google_types:
+        return "city"
+    place_type = place.get("place_type")
+    if place_type == "city":
+        return "city"
+    if place_type in ("airport", "landmark", "locality", "custom"):
+        return "specific"
+    return "unknown"
 
 
 def reverse_geocode(lat: float, lng: float) -> dict[str, Any]:
@@ -382,17 +480,14 @@ def resolve_origin_destination(
     elif origin_text:
         origin = geocode(origin_text)
         if origin is None:
-            origin = {
-                "place_id": "unknown-origin",
-                "name": origin_text,
-                "address": origin_text,
-                "lat": 23.0225,
-                "lng": 72.5714,
-                "place_type": "custom",
-                "source": "fallback_ahmedabad",
-            }
+            # No silent fallback to a hardcoded city: surface the problem so
+            # the user is asked for a resolvable starting point instead.
+            raise ValueError(
+                f"Could not resolve the origin '{origin_text}' to a location. "
+                "Please provide a more specific place name."
+            )
     else:
-        origin = get_place_by_id("in-amd") or INDIA_PLACES[0]
+        raise ValueError("An origin (place name or coordinates) is required.")
 
     if destination_lat is not None and destination_lng is not None:
         destination = reverse_geocode(destination_lat, destination_lng)
@@ -401,17 +496,12 @@ def resolve_origin_destination(
     elif destination_text:
         destination = geocode(destination_text)
         if destination is None:
-            destination = {
-                "place_id": "unknown-dest",
-                "name": destination_text,
-                "address": destination_text,
-                "lat": 19.0760,
-                "lng": 72.8777,
-                "place_type": "custom",
-                "source": "fallback_mumbai",
-            }
+            raise ValueError(
+                f"Could not resolve the destination '{destination_text}' to a "
+                "location. Please provide a more specific place name."
+            )
     else:
-        destination = get_place_by_id("in-jio") or INDIA_PLACES[0]
+        raise ValueError("A destination (place name or coordinates) is required.")
 
     dm = distance_matrix(origin, destination, mode="driving")
     return origin, destination, float(dm["distance_km"])
@@ -447,7 +537,9 @@ __all__ = [
     "haversine_km",
     "google_maps_enabled",
     "nominatim_enabled",
+    "locationiq_enabled",
     "geocode",
+    "classify_place",
     "reverse_geocode",
     "distance_matrix",
     "resolve_origin_destination",

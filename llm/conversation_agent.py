@@ -5,9 +5,10 @@ from __future__ import annotations
 import json
 import re
 from datetime import date, datetime, time, timedelta, timezone
+from zoneinfo import ZoneInfo
 from typing import Any
 
-from llm.client import OpenAICompatibleClient
+from llm.client import LocalLoraClient, OpenAICompatibleClient, build_llm_client
 from llm.conversation_memory import ConversationMemory
 from llm.prompts import state_context
 from llm.schemas import (
@@ -19,7 +20,14 @@ from llm.schemas import (
     SuggestedAction,
 )
 from llm.tool_registry import ToolRegistry
+from tools.maps_api import classify_place
 
+
+# "keep the broad place" signals when the agent asked to narrow a state/city.
+ACCEPT_BROAD_RE = re.compile(
+    r"\b(just|only|anywhere|fine|okay|ok|theek|wahi|city itself|main city)\b",
+    re.IGNORECASE,
+)
 
 POLICY_TERMS = {
     "baggage", "bag allowance", "refund policy", "cancellation policy",
@@ -46,11 +54,11 @@ class ConversationAgent:
         registry: ToolRegistry,
         *,
         memory: ConversationMemory | None = None,
-        client: OpenAICompatibleClient | None = None,
+        client: OpenAICompatibleClient | LocalLoraClient | None = None,
     ) -> None:
         self.registry = registry
         self.memory = memory or ConversationMemory()
-        self.client = client or OpenAICompatibleClient()
+        self.client = client or build_llm_client()
 
     @staticmethod
     def _contains_any(text: str, terms: set[str]) -> bool:
@@ -62,7 +70,8 @@ class ConversationAgent:
         value = re.split(
             r"\b(?:today|tomorrow|tonight|by|before|with|carrying|"
             r"and return|returning|for an?|prioriti[sz]e|prefer|jana|jaana|"
-            r"pahuchna|pahunchna|ke liye|kal|aaj)\b",
+            r"pahuchna|pahunchna|ke liye|kal|aaj|on|at|starting|departing|"
+            r"leaving)\b",
             value,
             maxsplit=1,
             flags=re.IGNORECASE,
@@ -74,6 +83,62 @@ class ConversationAgent:
         words = set(re.findall(r"[a-z]+", text.lower()))
         return len(words & HINGLISH_MARKERS) >= 2
 
+    def _destination_narrowing_question(
+        self, state: ConversationState, message: str, hinglish: bool
+    ) -> str | None:
+        """Follow-up question when the destination is a whole country/state/city.
+
+        Classification comes from the live geocoder (works for any region
+        worldwide), so "Texas" → where in Texas?, "Paris" → where in Paris?
+        Repeating the same place (or "just <place>") accepts it as-is.
+        """
+        constraints = state.constraints
+        destination = (constraints.destination or "").strip()
+        if not destination:
+            return None
+        prompted = (constraints.narrowing_prompted_for or "").strip()
+
+        if prompted:
+            if destination.lower() == prompted.lower():
+                # They repeated the broad place — keep it and move on.
+                constraints.narrowing_prompted_for = None
+                return None
+            if (
+                ACCEPT_BROAD_RE.search(message)
+                and classify_place(destination) == "unknown"
+            ):
+                # "Just Ahmedabad is fine" clobbered the slot with filler
+                # text; restore the place they are accepting.
+                constraints.destination = prompted
+                constraints.narrowing_prompted_for = None
+                return None
+
+        specificity = classify_place(destination)
+        if specificity not in ("country", "state", "city"):
+            constraints.narrowing_prompted_for = None
+            return None
+
+        constraints.narrowing_prompted_for = destination
+        if specificity in ("country", "state"):
+            region_word = "country" if specificity == "country" else "state"
+            return (
+                f"{destination} me kahan jana hai? Koi city ya specific jagah batao."
+                if hinglish
+                else (
+                    f"{destination} is a whole {region_word} — where in {destination} "
+                    "do you need to go? A city or a specific place helps."
+                )
+            )
+        return (
+            f"{destination} me exactly kahan? Koi locality ya landmark batao, "
+            f"ya bolo 'just {destination}'."
+            if hinglish
+            else (
+                f"Where in {destination} exactly — a locality, landmark, or "
+                f"address? Say 'just {destination}' if the city is enough."
+            )
+        )
+
     def _extract_constraints(self, state: ConversationState, message: str) -> None:
         text = message.strip()
         lower = text.lower()
@@ -81,7 +146,8 @@ class ConversationAgent:
 
         match = re.search(
             r"\bfrom\s+(.+?)\s+to\s+(.+?)(?=$|[,.]|\s+tomorrow\b|"
-            r"\s+today\b|\s+by\b|\s+with\b|\s+and\s+return\b|\s+for\b)",
+            r"\s+today\b|\s+by\b|\s+with\b|\s+and\s+return\b|\s+for\b|"
+            r"\s+on\b|\s+at\b|\s+starting\b|\s+departing\b|\s+leaving\b)",
             text,
             re.IGNORECASE,
         )
@@ -91,7 +157,7 @@ class ConversationAgent:
         else:
             match = re.search(
                 r"\bto\s+(.+?)\s+from\s+(.+?)(?=$|[,.]|\s+tomorrow\b|"
-                r"\s+today\b|\s+by\b|\s+with\b)",
+                r"\s+today\b|\s+by\b|\s+with\b|\s+on\b|\s+at\b)",
                 text,
                 re.IGNORECASE,
             )
@@ -100,7 +166,8 @@ class ConversationAgent:
                 constraints.origin = self._clean_place(match.group(2))
             elif constraints.destination is None:
                 destination_only = re.search(
-                    r"\b(?:go|travel|journey|trip|commute|get|reach).*?\bto\s+(.+?)(?=$|[,.]|\s+tomorrow\b|\s+today\b|\s+by\b)",
+                    r"\b(?:go|travel|journey|trip|commute|get|reach).*?\bto\s+(.+?)"
+                    r"(?=$|[,.]|\s+tomorrow\b|\s+today\b|\s+by\b|\s+on\b|\s+at\b)",
                     text,
                     re.IGNORECASE,
                 )
@@ -118,14 +185,38 @@ class ConversationAgent:
                 constraints.origin = self._clean_place(hinglish_route.group(1))
                 constraints.destination = self._clean_place(hinglish_route.group(2))
 
+        awaiting_return_slot = state.status in (
+            "waiting_for_return_origin",
+            "waiting_for_return_destination",
+            "waiting_for_return_date",
+            "waiting_for_return_time",
+        )
         if re.search(r"\b(no return|without return|one way|one-way)\b", lower):
             constraints.return_required = False
-        elif "return" in lower or "round trip" in lower or "wapas" in lower or "waapas" in lower:
+        elif not awaiting_return_slot and (
+            "return" in lower or "round trip" in lower or "wapas" in lower or "waapas" in lower
+        ):
             constraints.return_required = True
         elif state.status == "waiting_for_return" and re.search(r"\b(no|nahi)\b", lower):
             constraints.return_required = False
         elif state.status == "waiting_for_return" and re.search(r"\b(yes|haan|ha)\b", lower):
             constraints.return_required = True
+
+        # Return-journey details volunteered inline, e.g. "returning on
+        # 2026-07-20 at 6 pm from Gandhinagar".
+        return_date_match = re.search(
+            r"\breturn(?:ing)?\b[^.;]*?\b(?:on\s+)?(20\d{2}-\d{2}-\d{2}|tomorrow|today)\b",
+            lower,
+        )
+        if return_date_match:
+            constraints.return_date = return_date_match.group(1)
+        return_time_match = re.search(
+            r"\breturn(?:ing)?\b[^.;]*?\b(?:at|by)\s+"
+            r"([0-9]{1,2}(?::[0-9]{2})?\s*(?:am|pm)?)\b",
+            lower,
+        )
+        if return_time_match:
+            constraints.return_time = return_time_match.group(1).strip()
 
         bag = re.search(r"\b(\d+)\s*(?:bags?|suitcases?|luggage)\b", lower)
         if bag:
@@ -141,20 +232,34 @@ class ConversationAgent:
             constraints.passenger_count = max(1, int(passengers.group(1)))
 
         explicit_date = re.search(r"\b(20\d{2}-\d{2}-\d{2})\b", lower)
+        date_value: str | None = None
         if explicit_date:
-            constraints.start_date = explicit_date.group(1)
+            date_value = explicit_date.group(1)
         elif "tomorrow" in lower or "kal" in lower:
-            constraints.start_date = "tomorrow"
+            date_value = "tomorrow"
         elif "today" in lower or "aaj" in lower:
-            constraints.start_date = "today"
+            date_value = "today"
+        if date_value:
+            # A date given while the agent asked for the return date fills the
+            # return slot; it must not clobber the onward start date.
+            if state.status == "waiting_for_return_date":
+                constraints.return_date = date_value
+            else:
+                constraints.start_date = date_value
 
         start_time = re.search(
             r"\b(?:start(?:ing)?|depart(?:ing|ure)?|leave|at)\s+(?:at\s+)?"
             r"([0-9]{1,2}(?::[0-9]{2})?\s*(?:am|pm)?)\b",
             lower,
         )
-        if start_time:
-            constraints.start_time = start_time.group(1).strip()
+        if start_time and (
+            return_time_match is None
+            or start_time.start(1) != return_time_match.start(1)
+        ):
+            if state.status == "waiting_for_return_time":
+                constraints.return_time = start_time.group(1).strip()
+            else:
+                constraints.start_time = start_time.group(1).strip()
 
         deadline = re.search(
             r"\b(?:by|before)\s+([0-9]{1,2}(?::[0-9]{2})?\s*(?:am|pm)?)\b",
@@ -173,22 +278,36 @@ class ConversationAgent:
 
         # A short answer after a targeted clarification fills only that slot.
         if len(text.split()) <= 8 and not match:
+            simple_time = re.search(
+                r"\b([0-9]{1,2}(?::[0-9]{2})?\s*(?:am|pm)?)\b",
+                lower,
+            )
             if state.status == "waiting_for_origin":
                 constraints.origin = self._clean_place(text)
             elif state.status == "waiting_for_destination":
                 constraints.destination = self._clean_place(text)
             elif state.status == "waiting_for_start_date":
-                if explicit_date or any(word in lower for word in ("today", "tomorrow", "aaj", "kal")):
-                    pass
-                else:
+                if not date_value:
                     constraints.start_date = text
             elif state.status == "waiting_for_start_time":
-                simple_time = re.search(
-                    r"\b([0-9]{1,2}(?::[0-9]{2})?\s*(?:am|pm)?)\b",
-                    lower,
-                )
                 if simple_time:
                     constraints.start_time = simple_time.group(1).strip()
+            elif state.status == "waiting_for_return_origin":
+                if re.search(r"\b(same|wahi)\b", lower) and constraints.destination:
+                    constraints.return_origin = constraints.destination
+                else:
+                    constraints.return_origin = self._clean_place(text)
+            elif state.status == "waiting_for_return_destination":
+                if re.search(r"\b(same|wahi)\b", lower) and constraints.origin:
+                    constraints.return_destination = constraints.origin
+                else:
+                    constraints.return_destination = self._clean_place(text)
+            elif state.status == "waiting_for_return_date":
+                if not date_value and not constraints.return_date:
+                    constraints.return_date = text
+            elif state.status == "waiting_for_return_time":
+                if simple_time and not constraints.return_time:
+                    constraints.return_time = simple_time.group(1).strip()
 
     @staticmethod
     def _citations(results: list[dict[str, Any]]) -> list[Citation]:
@@ -282,25 +401,64 @@ class ConversationAgent:
         return "\n".join(lines)
 
     @staticmethod
+    def _parse_date_expr(raw: str, base: date) -> date | None:
+        """Parse a user-supplied date: ISO, dd/mm/yyyy, '15 July', 'tomorrow'…"""
+        value = (raw or "").strip().lower()
+        if not value:
+            return None
+        if value in {"today", "aaj"}:
+            return base
+        if value in {"tomorrow", "kal"}:
+            return base + timedelta(days=1)
+        if value in {"day after tomorrow", "parso"}:
+            return base + timedelta(days=2)
+        try:
+            return date.fromisoformat(value)
+        except ValueError:
+            pass
+        match = re.fullmatch(r"(\d{1,2})[/-](\d{1,2})[/-](20\d{2})", value)
+        if match:
+            try:
+                return date(int(match.group(3)), int(match.group(2)), int(match.group(1)))
+            except ValueError:
+                return None
+        cleaned = re.sub(r"\b(\d{1,2})(?:st|nd|rd|th)\b", r"\1", value)
+        cleaned = re.sub(r"[,.]", " ", cleaned)
+        cleaned = re.sub(r"\s+", " ", cleaned).strip()
+        for pattern in ("%d %B %Y", "%d %b %Y", "%B %d %Y", "%b %d %Y"):
+            try:
+                return datetime.strptime(cleaned, pattern).date()
+            except ValueError:
+                continue
+        for pattern in ("%d %B", "%d %b", "%B %d", "%b %d"):
+            try:
+                parsed = datetime.strptime(cleaned, pattern).date().replace(year=base.year)
+            except ValueError:
+                continue
+            # A month/day with no year means the next such date, not last year's.
+            return parsed if parsed >= base else parsed.replace(year=base.year + 1)
+        return None
+
+    @staticmethod
+    def _client_base(request: ChatMessageRequest) -> datetime:
+        try:
+            tz = ZoneInfo(request.timezone) if request.timezone else timezone.utc
+        except (KeyError, ValueError):
+            tz = timezone.utc
+        return (request.client_time or datetime.now(timezone.utc)).astimezone(tz)
+
+    @staticmethod
     def _resolved_start(state: ConversationState, request: ChatMessageRequest) -> str | None:
         raw_date = state.constraints.start_date
         raw_time = state.constraints.start_time
         if not raw_date or not raw_time:
             return None
-        base = request.client_time or datetime.now(timezone.utc)
-        lowered_date = raw_date.lower().strip()
-        if lowered_date in {"today", "aaj"}:
-            resolved_date = base.date()
-        elif lowered_date in {"tomorrow", "kal"}:
-            resolved_date = base.date() + timedelta(days=1)
-        else:
-            try:
-                resolved_date = date.fromisoformat(raw_date.strip())
-            except ValueError:
-                match = re.fullmatch(r"(\d{1,2})[/-](\d{1,2})[/-](20\d{2})", raw_date.strip())
-                if not match:
-                    return None
-                resolved_date = date(int(match.group(3)), int(match.group(2)), int(match.group(1)))
+        # "9 AM" means 9 AM on the user's clock: resolve dates and stamp the
+        # result in the client's timezone, not the server's UTC.
+        base = ConversationAgent._client_base(request)
+        resolved_date = ConversationAgent._parse_date_expr(raw_date, base.date())
+        if resolved_date is None:
+            return None
         cleaned_time = raw_time.lower().replace(" ", "")
         for pattern in ("%I:%M%p", "%I%p", "%H:%M", "%H"):
             try:
@@ -332,12 +490,37 @@ class ConversationAgent:
         trace: list[ExecutionTraceEntry],
         tool_results: list[dict[str, Any]],
     ) -> tuple[str, list[SuggestedAction]]:
+        constraints = state.constraints
         start_at = self._resolved_start(state, request)
         if start_at is None:
+            base = self._client_base(request)
+            if constraints.start_date and self._parse_date_expr(
+                constraints.start_date, base.date()
+            ) is None:
+                constraints.start_date = None
+                state.status = "waiting_for_start_date"
+                return (
+                    "I couldn't understand that date. What date would you like "
+                    "to start? For example 2026-07-20, 20/07/2026, or 20 July.",
+                    [],
+                )
             state.constraints.start_time = None
             state.status = "waiting_for_start_time"
             return "Please enter a valid start time, for example 9:30 AM.", []
         goal = " ".join(turn.content for turn in state.turns[-8:] if turn.role == "user")
+        if constraints.return_required and (
+            constraints.return_origin or constraints.return_date
+        ):
+            # Keep the collected return-journey slots attached to the goal so
+            # they survive even when the original message scrolls out of the
+            # recent-turns window.
+            goal += (
+                f" Return journey from {constraints.return_origin or constraints.destination}"
+                f" to {constraints.return_destination or constraints.origin}"
+                + (f" on {constraints.return_date}" if constraints.return_date else "")
+                + (f" at {constraints.return_time}" if constraints.return_time else "")
+                + "."
+            )
         result = self._execute(
             "plan_journey",
             {
@@ -785,14 +968,40 @@ class ConversationAgent:
                 )
 
         else:
-            origin = state.constraints.origin
-            destination = state.constraints.destination
             is_travel = (
                 self._contains_any(lower, TRAVEL_TERMS)
                 or state.status.startswith("waiting_for_")
                 or state.status in {"awaiting_origin_choice", "choosing_legs"}
             )
-            if is_travel and not origin:
+            # Narrow broad destinations first (a state → which city? → a city
+            # → where exactly?) while the destination is still being
+            # collected. May restore a clobbered slot, so read
+            # origin/destination afterwards.
+            narrowing_statuses = {
+                "collecting_intent",
+                "waiting_for_destination",
+                "waiting_for_origin",
+                "awaiting_origin_choice",
+                "waiting_for_location_permission",
+            }
+            narrowing_question = (
+                self._destination_narrowing_question(state, request.message, hinglish)
+                if is_travel and state.status in narrowing_statuses
+                else None
+            )
+            origin = state.constraints.origin
+            destination = state.constraints.destination
+            if is_travel and narrowing_question:
+                state.status = "waiting_for_destination"
+                answer = narrowing_question
+                suggested_actions.append(
+                    SuggestedAction(
+                        id="keep_broad_destination",
+                        label=f"Just {destination}",
+                        message=f"Just {destination} is fine",
+                    )
+                )
+            elif is_travel and not origin:
                 wants_current = bool(re.search(r"\b(current|my location|here)\b", lower))
                 wants_manual = bool(re.search(r"\b(manual|enter|type)\b", lower))
                 if wants_current and request.current_lat is not None and request.current_lng is not None:
@@ -844,6 +1053,62 @@ class ConversationAgent:
                         SuggestedAction(id="return_no", label="No, one way", message="No, this is one way"),
                     ]
                 )
+            elif (
+                is_travel and origin and destination
+                and state.constraints.return_required
+                and not state.constraints.return_origin
+            ):
+                state.status = "waiting_for_return_origin"
+                answer = (
+                    f"Return journey kahan se start hogi? Zaroori nahi ki {destination} se ho."
+                    if hinglish
+                    else (
+                        f"Where will your return journey start? It doesn't have "
+                        f"to be {destination} — tell me the starting place."
+                    )
+                )
+                suggested_actions.append(
+                    SuggestedAction(
+                        id="return_origin_same",
+                        label=f"Same as {destination}",
+                        message=f"Same as {destination}",
+                    )
+                )
+            elif (
+                is_travel and origin and destination
+                and state.constraints.return_required
+                and not state.constraints.return_destination
+            ):
+                state.status = "waiting_for_return_destination"
+                answer = (
+                    f"Return journey kahan khatam hogi? Zaroori nahi ki {origin} ho."
+                    if hinglish
+                    else (
+                        f"And where should the return journey end? It doesn't "
+                        f"have to be {origin}."
+                    )
+                )
+                suggested_actions.append(
+                    SuggestedAction(
+                        id="return_destination_same",
+                        label=f"Same as {origin}",
+                        message=f"Same as {origin}",
+                    )
+                )
+            elif (
+                is_travel and origin and destination
+                and state.constraints.return_required
+                and not state.constraints.return_date
+            ):
+                state.status = "waiting_for_return_date"
+                answer = "What date is the return journey?"
+            elif (
+                is_travel and origin and destination
+                and state.constraints.return_required
+                and not state.constraints.return_time
+            ):
+                state.status = "waiting_for_return_time"
+                answer = "What time would you like to start the return journey?"
             elif is_travel and origin and destination and state.preference_mode is None:
                 state.status = "waiting_for_preference_choice"
                 answer = "Would you like to use your usual saved preferences, or specify preferences for this trip?"

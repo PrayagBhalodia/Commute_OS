@@ -2,12 +2,12 @@ from pathlib import Path
 
 import pytest
 
-from datasets.scripts.common import ChatRecord, detect_language, redact_text, validate_record
-from datasets.scripts.deduplicate import deduplicate_records
-from datasets.scripts.generate_synthetic_travel_data import generate_records
-from datasets.scripts.inspect_licenses import inspect_manifest
-from datasets.scripts.split_dataset import assert_no_group_leakage, split_records
-from datasets.scripts.validate_dataset import validate_records
+from data_pipeline.scripts.common import ChatRecord, detect_language, redact_text, validate_record
+from data_pipeline.scripts.deduplicate import deduplicate_records
+from data_pipeline.scripts.generate_synthetic_travel_data import generate_records
+from data_pipeline.scripts.inspect_licenses import inspect_manifest
+from data_pipeline.scripts.split_dataset import assert_no_group_leakage, split_records
+from data_pipeline.scripts.validate_dataset import validate_records
 
 
 def test_dataset_manifest_has_complete_licenses():

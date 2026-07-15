@@ -8,6 +8,7 @@ Deterministic business logic only — no LLM calls.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sqlite3
 from datetime import datetime, timezone
@@ -29,6 +30,8 @@ from api.schemas import (
     TransportMode,
 )
 from tools import mock_cab_api, mock_flight_api, mock_transit_api
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -433,6 +436,33 @@ class BookingAgent:
     # Compensation
     # ------------------------------------------------------------------
 
+    def _recover_orphaned_debits(self, trip_id: str, user_id: str) -> None:
+        """Refund the net amount a crashed booking attempt debited.
+
+        A crash between wallet debits and the final booking persist leaves an
+        in_progress row and real debits with no confirmed booking. The ledger
+        is authoritative: refund debits minus refunds for this trip so the
+        fresh attempt starts from a clean wallet position.
+        """
+        net = 0.0
+        for tx in self.wallet.get_ledger(user_id, trip_id=trip_id):
+            if tx.type == "debit":
+                net += tx.amount
+            elif tx.type == "refund":
+                net -= tx.amount
+        if net > 0:
+            logger.warning(
+                "Recovering %.2f INR of orphaned debits for crashed booking %s",
+                net, trip_id,
+            )
+            self.wallet.refund(
+                user_id=user_id,
+                amount=net,
+                trip_id=trip_id,
+                description="Crash recovery: refund of orphaned booking debits",
+                idempotency_key=f"crash-recovery:{trip_id}:{to_paise(net)}",
+            )
+
     def _compensate_confirmed_legs(
         self,
         trip_id: str,
@@ -504,6 +534,12 @@ class BookingAgent:
             if by_key is not None and by_key.status == "confirmed":
                 return by_key
 
+        # A leftover in_progress row means a previous attempt crashed between
+        # debiting the wallet and persisting the outcome. Refund whatever that
+        # attempt debited before booking afresh.
+        if existing is not None and existing.status == "in_progress":
+            self._recover_orphaned_debits(request.trip_id, request.user_id)
+
         # --- Step 1: consent ---
         if not request.user_confirmed:
             raise BookingConsentRequiredError(
@@ -550,6 +586,25 @@ class BookingAgent:
             return confirmation
 
         # --- Steps 4–6: sequential book + debit + compensate ---
+        # Mark the attempt before any money moves so a crash mid-loop leaves
+        # an in_progress row that the next attempt can detect and compensate.
+        self._persist_full_booking(
+            BookingConfirmation(
+                trip_id=request.trip_id,
+                user_id=request.user_id,
+                itinerary_id=itinerary.itinerary_id,
+                status="in_progress",
+                leg_confirmations=[],
+                all_confirmed=False,
+                total_charged=0.0,
+                failed_legs=[],
+                error=None,
+                created_at=now,
+            ),
+            request.idempotency_key,
+            goal_json,
+        )
+
         confirmed_legs: list[LegBookingConfirmation] = []
         failed_leg_id: Optional[str] = None
         error_msg: Optional[str] = None
@@ -561,6 +616,9 @@ class BookingAgent:
                     request.trip_id, leg, force_failure=force
                 )
             except Exception as exc:  # noqa: BLE001 — normalize operator errors
+                logger.exception(
+                    "Operator call failed for leg %s (%s)", leg.leg_id, leg.mode
+                )
                 op_result = {
                     "success": False,
                     "booking_ref": None,

@@ -34,7 +34,7 @@ datasets:
     track: fine-tuning
   - id: synthetic_commute_os
     name: Commute OS English and Hinglish Synthetic Scenarios
-    source_url: repository://datasets/scripts/generate_synthetic_travel_data.py
+    source_url: repository://data_pipeline/scripts/generate_synthetic_travel_data.py
     publisher: Commute OS contributors
     license: project-generated
     status: accepted

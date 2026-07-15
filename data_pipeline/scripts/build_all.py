@@ -7,16 +7,16 @@ import json
 from collections import Counter
 from datetime import datetime, timezone
 
-from datasets.scripts.common import INTERIM_DIR, PROCESSED_DIR, write_jsonl
-from datasets.scripts.deduplicate import deduplicate_records
-from datasets.scripts.download_datasets import run_downloads
-from datasets.scripts.filter_travel_dialogues import filter_all
-from datasets.scripts.generate_synthetic_travel_data import generate_records
-from datasets.scripts.inspect_licenses import inspect_manifest
-from datasets.scripts.normalize_dialogues import normalize_records
-from datasets.scripts.redact_pii import redact_records
-from datasets.scripts.split_dataset import assert_no_group_leakage, split_records
-from datasets.scripts.validate_dataset import validate_records
+from data_pipeline.scripts.common import INTERIM_DIR, PROCESSED_DIR, write_jsonl
+from data_pipeline.scripts.deduplicate import deduplicate_records
+from data_pipeline.scripts.download_datasets import run_downloads
+from data_pipeline.scripts.filter_travel_dialogues import filter_all
+from data_pipeline.scripts.generate_synthetic_travel_data import generate_records
+from data_pipeline.scripts.inspect_licenses import inspect_manifest
+from data_pipeline.scripts.normalize_dialogues import normalize_records
+from data_pipeline.scripts.redact_pii import redact_records
+from data_pipeline.scripts.split_dataset import assert_no_group_leakage, split_records
+from data_pipeline.scripts.validate_dataset import validate_records
 
 RAG_EVALUATION = [
     {"id": "rag-airport-buffer-en", "language": "english", "query": "How early should I reach the airport?", "expected_categories": ["airport-transfer-guidance", "connection-buffer-guidance"]},

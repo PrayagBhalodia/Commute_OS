@@ -36,6 +36,18 @@ const DATETIME_HINT =
 type ModalMode = "start" | "return";
 type ModalIntent = "plan" | "capture";
 
+/** "16/07 at 09:00" from an ISO-ish datetime, or null when unparseable. */
+function formatWhen(iso?: string | null): string | null {
+  if (!iso) return null;
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return null;
+  const dd = String(date.getDate()).padStart(2, "0");
+  const mm = String(date.getMonth() + 1).padStart(2, "0");
+  const hh = String(date.getHours()).padStart(2, "0");
+  const min = String(date.getMinutes()).padStart(2, "0");
+  return `${dd}/${mm} at ${hh}:${min}`;
+}
+
 export default function PlanPage() {
   const { planMutation, returnPlanMutation } = useJourneyController();
   const plan = useJourneyStore((state) => state.activePlan);
@@ -51,6 +63,24 @@ export default function PlanPage() {
   const returnDateTime = useJourneyStore((state) => state.returnDateTime);
   const setSchedule = useJourneyStore((state) => state.setSchedule);
   const selected = getSelectedItinerary(plan, selectedId);
+
+  // One-line journey summary ("From A to B on DD/MM at HH:MM …") shown with
+  // the results — the same trip whether it was planned here or in the chat.
+  const goalContext = plan?.intent?.goal_context;
+  const departWhen = formatWhen(goalContext?.appointment_time ?? startDateTime);
+  const returnWhen = formatWhen(returnDateTime);
+  const journeySummary = plan
+    ? [
+        `From ${plan.origin.name} to ${plan.destination.name}`,
+        departWhen ? `on ${departWhen}` : null,
+        returnWhen ? `returning ${returnWhen}` : null,
+        goalContext?.luggage_count
+          ? `${goalContext.luggage_count} bag${goalContext.luggage_count > 1 ? "s" : ""}`
+          : null,
+      ]
+        .filter(Boolean)
+        .join(" · ")
+    : null;
 
   const form = useForm<PlanRequest>({
     // Return trip is unchecked by default (requirement 3).
@@ -256,6 +286,9 @@ export default function PlanPage() {
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
                 <h1 className="text-2xl font-semibold">{plan.origin.name} to {plan.destination.name}</h1>
+                {journeySummary ? (
+                  <p className="mt-1 text-sm font-medium text-slate-700">{journeySummary}</p>
+                ) : null}
                 <p className="text-sm text-slate-500">
                   {ranked.length} options · optimized for {PRIORITY_LABELS[priority].toLowerCase()} · {plan.message}
                 </p>

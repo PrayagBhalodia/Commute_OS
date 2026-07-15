@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import uuid
 from dataclasses import dataclass
 from typing import Any, Callable, Literal
@@ -18,6 +19,8 @@ from llm.schemas import ExecutionTraceEntry
 from orchestration.orchestrator import DMOSOrchestrator
 from rag.retriever import KnowledgeRetriever
 from tools.places_india import list_places
+
+logger = logging.getLogger(__name__)
 
 
 class StrictToolInput(BaseModel):
@@ -210,6 +213,7 @@ class ToolRegistry:
             )
             return {"ok": True, "tool": name, "data": result}
         except Exception as exc:
+            logger.exception("Tool %s failed", name)
             event_log.append(
                 ExecutionTraceEntry(
                     event="tool_failed",

@@ -15,6 +15,7 @@ import { useBookingStatusSync, useCancelBookingController } from "@/controllers/
 import { formatInr } from "@/lib/utils";
 import {
   journeyEndpoints,
+  journeyProgress,
   journeySegments,
   segmentProgress,
   SEGMENT_PROGRESS_LABEL,
@@ -26,6 +27,14 @@ const PROGRESS_TONE: Record<SegmentProgress, "green" | "amber" | "neutral"> = {
   finished: "green",
   ongoing: "amber",
   upcoming: "neutral",
+};
+
+// Header wording for the trip as a whole ("finished" reads better as
+// "Completed" at trip level).
+const OVERALL_LABEL: Record<SegmentProgress, string> = {
+  finished: "Completed",
+  ongoing: "Ongoing",
+  upcoming: "Upcoming",
 };
 
 export default function ActivePage() {
@@ -51,10 +60,14 @@ export default function ActivePage() {
     return <EmptyState title="No active journey" message="Your last trip was cancelled and refunded. Find it in the History tab." />;
   }
 
-  const currentLeg = itinerary.legs[0];
-  const nextLeg = itinerary.legs[1];
   const { initial, final } = journeyEndpoints(itinerary);
   const segments = journeySegments(itinerary);
+  const overall = journeyProgress(segments);
+  // "Now" tracks the first leg that hasn't finished yet (last leg once done).
+  const firstUnfinished = segments.findIndex((segment) => segmentProgress(segment) !== "finished");
+  const activeIndex = firstUnfinished === -1 ? segments.length - 1 : firstUnfinished;
+  const currentLeg = itinerary.legs[activeIndex] ?? itinerary.legs[0];
+  const nextLeg = itinerary.legs[activeIndex + 1];
 
   return (
     <div className="grid gap-6 lg:grid-cols-[1fr_360px]">
@@ -65,15 +78,15 @@ export default function ActivePage() {
             <span>{initial}</span>
             <ArrowRight className="h-4 w-4 text-slate-400" />
             <span>{final}</span>
-            <Badge tone="amber">Ongoing</Badge>
+            <Badge tone={PROGRESS_TONE[overall]}>{OVERALL_LABEL[overall]}</Badge>
           </p>
           <p className="text-sm text-slate-500">Trip {plan.trip_id} · ETA {new Date(itinerary.legs[itinerary.legs.length - 1].arrival).toLocaleString()}</p>
         </div>
         <Card>
           <CardHeader><CardTitle>Journey segments</CardTitle></CardHeader>
           <CardContent className="space-y-2">
-            {segments.map((segment, index) => {
-              const progress = segmentProgress(index, segments.length);
+            {segments.map((segment) => {
+              const progress = segmentProgress(segment);
               return (
                 <div
                   key={segment.leg_id}

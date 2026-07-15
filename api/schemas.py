@@ -150,7 +150,15 @@ class BookingConfirmation(BaseModel):
     @field_validator("status")
     @classmethod
     def validate_status(cls, v: str) -> str:
-        allowed = {"confirmed", "failed", "partially_cancelled", "cancelled"}
+        allowed = {
+            "confirmed",
+            "failed",
+            "partially_cancelled",
+            "cancelled",
+            # Persisted before the leg-booking loop so a crash mid-booking
+            # leaves a discoverable record instead of orphaned wallet debits.
+            "in_progress",
+        }
         if v not in allowed:
             raise ValueError(f"status must be one of {sorted(allowed)}")
         return v

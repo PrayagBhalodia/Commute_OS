@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from difflib import SequenceMatcher
 
-from datasets.scripts.common import content_fingerprint, normalize_text
+from data_pipeline.scripts.common import content_fingerprint, normalize_text
 
 
 def _text(record: dict) -> str:

@@ -90,7 +90,7 @@ export default function BookingPage() {
         {shortfall > 0 ? (
           <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
             <div className="flex gap-2"><AlertCircle className="h-4 w-4" /> Wallet is short by {formatInr(shortfall)}.</div>
-            <p className="mt-2">The orchestrated confirm endpoint can auto-top-up the shortfall for demo continuity after consent, but topping up first makes the ledger clearer.</p>
+            <p className="mt-2">Booking will fail until the wallet covers the fare — top up the shortfall below before confirming.</p>
           </div>
         ) : null}
         <WalletTopUpDialog

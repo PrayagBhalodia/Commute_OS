@@ -9,6 +9,7 @@ operator credentials. Google Maps is optional via GOOGLE_MAPS_API_KEY.
 
 from __future__ import annotations
 
+import logging
 import os
 from typing import Any, Optional
 
@@ -17,6 +18,13 @@ from dotenv import load_dotenv
 # Load local configuration before importing providers that read environment
 # settings while their modules initialize.
 load_dotenv()
+
+# Structured logs for the whole backend. Uvicorn configures its own access
+# logger; this covers the application loggers (orchestrator, agents, auth).
+logging.basicConfig(
+    level=os.environ.get("COMMUTE_LOG_LEVEL", "INFO").upper(),
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -65,11 +73,13 @@ from tools.places_india import list_places
 WALLET_DB = os.environ.get("COMMUTE_WALLET_DB", "data/wallet.db")
 BOOKING_DB = os.environ.get("COMMUTE_BOOKING_DB", "data/bookings.db")
 PROFILES_DB = os.environ.get("COMMUTE_PROFILES_DB", "data/profiles.db")
+PLANS_DB = os.environ.get("COMMUTE_PLANS_DB", "data/plans.db")
 
 orchestrator = DMOSOrchestrator(
     wallet_db=WALLET_DB,
     booking_db=BOOKING_DB,
     profiles_db=PROFILES_DB,
+    plans_db=PLANS_DB,
 )
 wallet_agent = orchestrator.wallet
 booking_agent = orchestrator.booking
@@ -90,6 +100,10 @@ app.add_middleware(
         "http://127.0.0.1:3000",
         "http://localhost:8501",
     ],
+    # Local tooling (previews, ad-hoc dev servers) binds arbitrary ports.
+    # Remote sites cannot forge a localhost Origin, so this stays dev-safe;
+    # list real origins explicitly before any internet-facing deployment.
+    allow_origin_regex=r"http://(localhost|127\.0\.0\.1):\d+",
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -173,7 +187,11 @@ def places_reverse(
 @app.post("/os/plan", response_model=PlanResponse)
 def os_plan(body: PlanRequest) -> PlanResponse:
     """Agent 1 → Maps → Agent 2. Returns ranked itineraries + CoT trace."""
-    return orchestrator.plan(body)
+    try:
+        return orchestrator.plan(body)
+    except ValueError as exc:
+        # e.g. an origin/destination no geocoding provider could resolve.
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.post("/os/confirm", response_model=ConfirmPlanResponse)

@@ -17,6 +17,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import logging
 import os
 import re
 import secrets
@@ -29,6 +30,8 @@ from typing import Any, Optional
 
 from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel, Field, field_validator
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -325,10 +328,12 @@ def login(body: LoginBody) -> dict[str, Any]:
             (identifier, identifier),
         ).fetchone()
         if row is None:
+            logger.warning("Login failed: unknown identifier")
             raise HTTPException(status_code=401, detail="No account found for this email or mobile number.")
         if row["provider"] == "google" and not row["password_hash"]:
             raise HTTPException(status_code=400, detail="This account uses Google sign-in. Use 'Continue with Google'.")
         if not secrets.compare_digest(row["password_hash"], _hash_password(body.password, row["salt"])):
+            logger.warning("Login failed: bad password for user %s", row["id"])
             raise HTTPException(status_code=401, detail="Incorrect password.")
         token = _create_session(conn, row["id"])
         return {"token": token, "user": _public_user(row)}

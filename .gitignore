@@ -37,12 +37,12 @@ htmlcov/
 # Runtime databases (created automatically; do not commit)
 data/*.db
 data/chroma/
-datasets/raw/**
-datasets/interim/**
-datasets/processed/**
-!datasets/raw/.gitkeep
-!datasets/interim/.gitkeep
-!datasets/processed/.gitkeep
+data_pipeline/raw/**
+data_pipeline/interim/**
+data_pipeline/processed/**
+!data_pipeline/raw/.gitkeep
+!data_pipeline/interim/.gitkeep
+!data_pipeline/processed/.gitkeep
 finetuning/output/
 .run-logs/
 *.db

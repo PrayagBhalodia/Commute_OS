@@ -2,33 +2,45 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { Loader2, LocateFixed, Send } from "lucide-react";
+import { Loader2, LocateFixed, Send, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/input";
 import { formatInr } from "@/lib/utils";
-import type { ChatAction, ChatResponse } from "@/models/chat";
+import type { ChatAction, ChatMessage } from "@/models/chat";
 import type { ItineraryOption, PlanResponse } from "@/models/journey";
-import { sendChatMessage } from "@/services/chat-service";
+import { deleteChatSession, sendChatMessage } from "@/services/chat-service";
 import { getStoredToken } from "@/services/auth-service";
 import { useJourneyStore } from "@/store/journey-store";
 
-interface Message {
-  role: "user" | "assistant";
-  text: string;
-}
+const GREETING: ChatMessage = { role: "assistant", text: "Hi, where are you heading today?" };
 
 export function ConversationalAssistant({ onAuthRequired }: { onAuthRequired: () => void }) {
   const [input, setInput] = useState("");
-  const [messages, setMessages] = useState<Message[]>([
-    { role: "assistant", text: "Hi, where are you heading today?" },
-  ]);
-  const [latest, setLatest] = useState<ChatResponse>();
-  const [sessionId, setSessionId] = useState<string>();
   const [loading, setLoading] = useState(false);
   const userId = useJourneyStore((state) => state.userId);
   const setPlan = useJourneyStore((state) => state.setPlan);
+  // Chat transcript and session live in the persisted store so the
+  // conversation survives reloads and navigation until the user clears it.
+  const storedMessages = useJourneyStore((state) => state.chatMessages);
+  const sessionId = useJourneyStore((state) => state.chatSessionId);
+  const latest = useJourneyStore((state) => state.chatLatest);
+  const appendChatMessage = useJourneyStore((state) => state.appendChatMessage);
+  const setChatResponse = useJourneyStore((state) => state.setChatResponse);
+  const clearChat = useJourneyStore((state) => state.clearChat);
   const router = useRouter();
+  const messages = storedMessages.length ? storedMessages : [GREETING];
+
+  async function handleClear() {
+    if (sessionId) {
+      try {
+        await deleteChatSession(sessionId);
+      } catch {
+        // Server-side cleanup is best-effort; the local session resets anyway.
+      }
+    }
+    clearChat();
+  }
 
   async function submit(message = input.trim(), location?: GeolocationCoordinates) {
     if (!message || loading) return;
@@ -37,7 +49,7 @@ export function ConversationalAssistant({ onAuthRequired }: { onAuthRequired: ()
       return;
     }
     setInput("");
-    setMessages((items) => [...items, { role: "user", text: message }]);
+    appendChatMessage({ role: "user", text: message });
     setLoading(true);
     try {
       const response = await sendChatMessage({
@@ -54,9 +66,7 @@ export function ConversationalAssistant({ onAuthRequired }: { onAuthRequired: ()
             }
           : {}),
       });
-      setSessionId(response.session_id);
-      setLatest(response);
-      setMessages((items) => [...items, { role: "assistant", text: response.message }]);
+      setChatResponse(response);
       const planned = response.tool_results.find((item) => item.ok && item.tool === "plan_journey")?.data;
       if (planned) {
         setPlan({ ...planned, chain_of_thought: planned.chain_of_thought ?? [] } as PlanResponse);
@@ -118,6 +128,21 @@ export function ConversationalAssistant({ onAuthRequired }: { onAuthRequired: ()
 
   return (
     <div className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-soft">
+      {storedMessages.length ? (
+        <div className="flex items-center justify-between border-b border-slate-100 px-4 py-2">
+          <p className="text-xs font-medium text-slate-500">Journey assistant</p>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="h-7 px-2 text-xs text-slate-500 hover:text-red-600"
+            onClick={() => void handleClear()}
+            disabled={loading}
+          >
+            <Trash2 className="h-3.5 w-3.5" /> Clear chat
+          </Button>
+        </div>
+      ) : null}
       {messages.length ? (
         <div className="max-h-[420px] space-y-3 overflow-y-auto border-b border-slate-100 p-4" aria-live="polite">
           {messages.map((message, index) => (

@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from datasets.scripts.common import RAW_DIR, SYSTEM_MESSAGE, detect_language, read_jsonl, validate_record
+from data_pipeline.scripts.common import RAW_DIR, SYSTEM_MESSAGE, detect_language, read_jsonl, validate_record
 
 TRAVEL_TERMS = {
     "airport", "baggage", "booking", "bus", "cab", "cancel", "commute",

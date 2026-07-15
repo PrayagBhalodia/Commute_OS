@@ -1,6 +1,6 @@
 model_name: Qwen/Qwen2.5-1.5B-Instruct
-train_file: datasets/processed/chatbot_train.jsonl
-validation_file: datasets/processed/chatbot_validation.jsonl
+train_file: data_pipeline/processed/chatbot_train.jsonl
+validation_file: data_pipeline/processed/chatbot_validation.jsonl
 output_dir: finetuning/output/commute-os-lora
 max_sequence_length: 1024
 epochs: 2

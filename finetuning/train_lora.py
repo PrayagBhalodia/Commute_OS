@@ -3,28 +3,9 @@
 from __future__ import annotations
 
 import argparse
-import importlib
-import sys
 from pathlib import Path
 
 import yaml
-
-
-def _load_huggingface_dataset_api():
-    """Import Hugging Face Datasets without resolving the local datasets package."""
-    repository_root = Path(__file__).resolve().parents[1]
-    original_path = sys.path[:]
-    try:
-        sys.path = [
-            entry for entry in sys.path
-            if Path(entry or ".").resolve() != repository_root
-        ]
-        module = importlib.import_module("datasets")
-    finally:
-        sys.path = original_path
-    if not hasattr(module, "load_dataset"):
-        raise RuntimeError("Install requirements-ml.txt to provide Hugging Face Datasets.")
-    return module.load_dataset
 
 
 def train(config_path: Path) -> None:
@@ -37,7 +18,14 @@ def train(config_path: Path) -> None:
     from transformers import AutoModelForCausalLM, AutoTokenizer, TrainingArguments
     from trl import SFTTrainer
 
-    load_dataset = _load_huggingface_dataset_api()
+    try:
+        # The local package was renamed to data_pipeline, so this resolves
+        # unambiguously to Hugging Face Datasets.
+        from datasets import load_dataset
+    except ImportError as exc:
+        raise RuntimeError(
+            "Install requirements-ml.txt to provide Hugging Face Datasets."
+        ) from exc
 
     config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     tokenizer = AutoTokenizer.from_pretrained(config["model_name"])

@@ -14,9 +14,11 @@ Each phase emits ThoughtStep records (thought / action / observation / decision)
 
 from __future__ import annotations
 
+import logging
 import os
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Optional
 
 from agents.agent1_intent import IntentAgent
@@ -44,6 +46,9 @@ from api.schemas import (
     ThoughtStep,
     UserPreferences,
 )
+from orchestration.plan_store import PlanStore
+
+logger = logging.getLogger(__name__)
 
 
 def _now() -> datetime:
@@ -58,6 +63,7 @@ class DMOSOrchestrator:
         wallet_db: Optional[str] = None,
         booking_db: Optional[str] = None,
         profiles_db: Optional[str] = None,
+        plans_db: Optional[str] = None,
     ) -> None:
         self.memory = UserMemoryStore(
             db_path=profiles_db
@@ -67,10 +73,12 @@ class DMOSOrchestrator:
             db_path=wallet_db
             or os.environ.get("COMMUTE_WALLET_DB", "data/wallet.db")
         )
+        booking_path = booking_db or os.environ.get(
+            "COMMUTE_BOOKING_DB", "data/bookings.db"
+        )
         self.booking = BookingAgent(
             wallet_agent=self.wallet,
-            db_path=booking_db
-            or os.environ.get("COMMUTE_BOOKING_DB", "data/bookings.db"),
+            db_path=booking_path,
             failure_rate=0.0,
             latency_seconds=0.0,
         )
@@ -82,8 +90,14 @@ class DMOSOrchestrator:
             journey_agent=self.journey,
             memory=self.memory,
         )
-        # In-memory plan cache for confirm step (prototype)
-        self._plans: dict[str, PlanResponse] = {}
+        # SQLite-backed plan store so in-flight plans survive server
+        # restarts. Defaults next to the booking DB, keeping tests (which
+        # pass tmp-dir paths) isolated from data/.
+        self._plans = PlanStore(
+            db_path=plans_db
+            or os.environ.get("COMMUTE_PLANS_DB")
+            or str(Path(booking_path).with_name("plans.db"))
+        )
 
     # ------------------------------------------------------------------
     # CoT helper
@@ -225,7 +239,7 @@ class DMOSOrchestrator:
                     "Please mention where you need to go."
                 ),
             )
-            self._plans[trip_id] = resp
+            self._plans.put(resp)
             return resp
 
         # Origin gate: if we genuinely could not determine a starting point,
@@ -269,7 +283,7 @@ class DMOSOrchestrator:
                     "starting from? Please mention your origin."
                 ),
             )
-            self._plans[trip_id] = resp
+            self._plans.put(resp)
             return resp
 
         self._step(
@@ -324,7 +338,7 @@ class DMOSOrchestrator:
                 status="failed",
                 message="No itineraries could be composed.",
             )
-            self._plans[trip_id] = resp
+            self._plans.put(resp)
             return resp
 
         best = itineraries[0]
@@ -362,7 +376,11 @@ class DMOSOrchestrator:
                 f"(~{dist:.0f} km). Confirm to book."
             ),
         )
-        self._plans[trip_id] = resp
+        self._plans.put(resp)
+        logger.info(
+            "Plan %s created for %s: %d option(s) %s -> %s",
+            trip_id, request.user_id, len(itineraries), o.name, d.name,
+        )
         self.memory.record_event(
             request.user_id,
             "plan",
@@ -384,6 +402,10 @@ class DMOSOrchestrator:
         thoughts: list[ThoughtStep] = []
         plan = self._plans.get(request.trip_id)
         if plan is None:
+            logger.warning(
+                "Confirm rejected: unknown trip %s for %s",
+                request.trip_id, request.user_id,
+            )
             return ConfirmPlanResponse(
                 trip_id=request.trip_id,
                 status="failed",
@@ -469,6 +491,8 @@ class DMOSOrchestrator:
                 description="Pre-booking top-up",
             )
 
+        # Never manufacture funds: a shortfall fails the confirm with a clear
+        # message. Explicit top-ups happen via topup_if_needed or the wallet UI.
         bal = self.wallet.get_balance(request.user_id)
         if bal.balance < itin.total_price:
             need = itin.total_price - bal.balance
@@ -479,19 +503,19 @@ class DMOSOrchestrator:
                 f"Need ₹{need:.2f} more (have ₹{bal.balance:.2f}, fare ₹{itin.total_price:.2f}).",
                 agent="agent4",
             )
-            # Auto top-up shortfall for smoother prototype UX (still explicit in CoT)
-            self.wallet.topup(
-                request.user_id,
-                need + 50,
-                trip_id=request.trip_id,
-                description="Auto top-up shortfall for confirmed booking",
+            logger.warning(
+                "Confirm rejected for trip %s: fare %.2f exceeds balance %.2f",
+                request.trip_id, itin.total_price, bal.balance,
             )
-            self._step(
-                thoughts,
-                "action",
-                "Auto top-up shortfall",
-                f"Credited ₹{need + 50:.2f} so booking can proceed after consent.",
-                agent="agent4",
+            return ConfirmPlanResponse(
+                trip_id=request.trip_id,
+                status="failed",
+                wallet_balance=bal.balance,
+                chain_of_thought=thoughts,
+                message=(
+                    f"Insufficient wallet balance: fare ₹{itin.total_price:.2f}, "
+                    f"balance ₹{bal.balance:.2f}. Top up ₹{need:.2f} and confirm again."
+                ),
             )
 
         # Ensure itinerary trip_id matches
@@ -543,7 +567,11 @@ class DMOSOrchestrator:
         )
 
         plan.selected_itinerary_id = request.itinerary_id
-        self._plans[request.trip_id] = plan
+        self._plans.put(plan)
+        logger.info(
+            "Booking for trip %s finished with status=%s (charged=%s)",
+            request.trip_id, confirmation.status, confirmation.total_charged,
+        )
 
         return ConfirmPlanResponse(
             trip_id=request.trip_id,
@@ -563,6 +591,10 @@ class DMOSOrchestrator:
     # ------------------------------------------------------------------
 
     def handle_disruption(self, request: DisruptionRequest) -> DisruptionResponse:
+        logger.info(
+            "Disruption reported on trip %s by %s: %s",
+            request.trip_id, request.user_id, request.reason,
+        )
         self.memory.record_event(
             request.user_id, "disruption_request", request.model_dump(mode="json")
         )
@@ -732,7 +764,9 @@ class DMOSOrchestrator:
             if previous.arrival > current.departure:
                 raise ValueError("Selected legs overlap in time")
 
-        plan = self._plans[trip_id]
+        # get_leg_options above already validated the plan exists.
+        plan = self._plans.get(trip_id)
+        assert plan is not None
         route = next(
             item for item in plan.itineraries
             if item.itinerary_id == route_itinerary_id

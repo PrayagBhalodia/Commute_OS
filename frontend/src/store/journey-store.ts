@@ -3,6 +3,7 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import type { BookingConfirmation, ConfirmPlanResponse } from "@/models/booking";
+import type { ChatMessage, ChatResponse } from "@/models/chat";
 import type { DisruptionResponse } from "@/models/disruption";
 import type { ItineraryOption, PlanResponse, ThoughtStep } from "@/models/journey";
 import type { TripPriority } from "@/lib/priority";
@@ -23,6 +24,11 @@ interface JourneyState {
   booking?: ConfirmPlanResponse;
   disruption?: DisruptionResponse;
   trace: ThoughtStep[];
+  /** Home-page chat transcript; persists until the user clears the session. */
+  chatMessages: ChatMessage[];
+  chatSessionId?: string;
+  /** Last chat response, kept so action chips survive reloads. */
+  chatLatest?: ChatResponse;
   setUserId: (userId: string) => void;
   setGoalText: (goalText: string) => void;
   setPriority: (priority: TripPriority) => void;
@@ -35,6 +41,9 @@ interface JourneyState {
   setBooking: (booking: ConfirmPlanResponse) => void;
   updateBookingConfirmation: (confirmation: BookingConfirmation) => void;
   setDisruption: (disruption: DisruptionResponse) => void;
+  appendChatMessage: (message: ChatMessage) => void;
+  setChatResponse: (response: ChatResponse) => void;
+  clearChat: () => void;
   resetJourney: () => void;
 }
 
@@ -45,6 +54,7 @@ export const useJourneyStore = create<JourneyState>()(
       goalText: "",
       priority: "time",
       trace: [],
+      chatMessages: [],
       setUserId: (userId) => set({ userId }),
       setGoalText: (goalText) => set({ goalText }),
       setPriority: (priority) => set({ priority }),
@@ -86,6 +96,16 @@ export const useJourneyStore = create<JourneyState>()(
           disruption,
           trace: [...state.trace, ...disruption.chain_of_thought],
         })),
+      appendChatMessage: (message) =>
+        set((state) => ({ chatMessages: [...state.chatMessages, message] })),
+      setChatResponse: (response) =>
+        set((state) => ({
+          chatSessionId: response.session_id,
+          chatLatest: response,
+          chatMessages: [...state.chatMessages, { role: "assistant", text: response.message }],
+        })),
+      clearChat: () =>
+        set({ chatMessages: [], chatSessionId: undefined, chatLatest: undefined }),
       resetJourney: () =>
         set({
           activePlan: undefined,

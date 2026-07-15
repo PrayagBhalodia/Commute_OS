@@ -22,6 +22,7 @@ from api.schemas import (
     DisruptionResponse,
     GoalContext,
     ItineraryOption,
+    ReconciliationResult,
     ThoughtStep,
 )
 
@@ -230,54 +231,81 @@ class DisruptionAgent:
                     agent="agent3",
                 )
                 try:
-                    # Ensure funds
+                    # Never manufacture funds: if the wallet cannot cover the
+                    # replacement, keep the cancellation + refund but do not
+                    # rebook — surface the shortfall for an explicit top-up.
                     bal = self.wallet.get_balance(request.user_id)
                     if bal.balance < revised.total_price:
-                        need = revised.total_price - bal.balance + 100
-                        self.wallet.topup(
-                            request.user_id,
-                            need,
-                            trip_id=new_trip_id,
-                            description="Auto top-up for disruption rebook (demo)",
-                        )
+                        shortfall = revised.total_price - bal.balance
                         think(
-                            "action",
-                            "Wallet top-up for rebook",
-                            f"Added ₹{need:.2f} to complete rebook.",
+                            "decision",
+                            "Rebook blocked: insufficient funds",
+                            f"Replacement costs ₹{revised.total_price:.2f} but "
+                            f"wallet has ₹{bal.balance:.2f}. Top up "
+                            f"₹{shortfall:.2f} to rebook.",
                             agent="agent4",
                         )
-
-                    rebooking = self.booking.book_itinerary(
-                        BookingRequest(
-                            trip_id=new_trip_id,
+                        reconciliation = ReconciliationResult(
+                            trip_id=request.trip_id,
                             user_id=request.user_id,
-                            itinerary=revised,
-                            user_confirmed=True,
-                            idempotency_key=f"rebook-{new_trip_id}",
-                            metadata={"parent_trip": request.trip_id, "disruption": request.reason},
+                            original_total=refund_total,
+                            revised_total=revised.total_price,
+                            difference=revised.total_price - refund_total,
+                            action="top_up_required",
+                            wallet_balance_after=bal.balance,
+                            transaction=None,
+                            message=(
+                                f"Replacement journey needs ₹{revised.total_price:.2f} "
+                                f"but the wallet has ₹{bal.balance:.2f}. Top up "
+                                f"₹{shortfall:.2f} and rebook."
+                            ),
                         )
-                    )
-                    think(
-                        "observation",
-                        "Rebook result",
-                        f"status={rebooking.status}, charged=₹{rebooking.total_charged:.2f}",
-                        agent="agent3",
-                    )
+                    else:
+                        rebooking = self.booking.book_itinerary(
+                            BookingRequest(
+                                trip_id=new_trip_id,
+                                user_id=request.user_id,
+                                itinerary=revised,
+                                user_confirmed=True,
+                                idempotency_key=f"rebook-{new_trip_id}",
+                                metadata={"parent_trip": request.trip_id, "disruption": request.reason},
+                            )
+                        )
+                        think(
+                            "observation",
+                            "Rebook result",
+                            f"status={rebooking.status}, charged=₹{rebooking.total_charged:.2f}",
+                            agent="agent3",
+                        )
 
-                    # Reconcile original trip charged vs what remains + new
-                    # For demo clarity: reconcile cancelled amount vs new booking
-                    reconciliation = self.wallet.reconcile(
-                        trip_id=request.trip_id,
-                        user_id=request.user_id,
-                        original_total=refund_total,
-                        revised_total=rebooking.total_charged if rebooking.all_confirmed else 0.0,
-                    )
-                    think(
-                        "observation",
-                        "Wallet reconciliation",
-                        f"action={reconciliation.action}: {reconciliation.message}",
-                        agent="agent4",
-                    )
+                        # Money already moved for real: cancel_leg refunded the
+                        # cancelled legs and book_itinerary debited the new trip.
+                        # The reconciliation is an informational summary only —
+                        # executing it as a transfer would double-charge.
+                        new_total = rebooking.total_charged if rebooking.all_confirmed else 0.0
+                        diff = new_total - refund_total
+                        bal_after = self.wallet.get_balance(request.user_id)
+                        reconciliation = ReconciliationResult(
+                            trip_id=request.trip_id,
+                            user_id=request.user_id,
+                            original_total=refund_total,
+                            revised_total=new_total,
+                            difference=diff,
+                            action="charge_more" if diff > 0 else ("refund" if diff < 0 else "no_action"),
+                            wallet_balance_after=bal_after.balance,
+                            transaction=None,
+                            message=(
+                                f"Settled via leg refunds (₹{refund_total:.2f}) and the "
+                                f"rebooking debit (₹{new_total:.2f}); net "
+                                f"{'charge' if diff >= 0 else 'refund'} ₹{abs(diff):.2f}."
+                            ),
+                        )
+                        think(
+                            "observation",
+                            "Wallet reconciliation",
+                            f"action={reconciliation.action}: {reconciliation.message}",
+                            agent="agent4",
+                        )
                 except Exception as exc:  # noqa: BLE001
                     think("observation", "Rebook failed", str(exc), agent="agent3")
 
@@ -301,6 +329,8 @@ class DisruptionAgent:
         )
         if rebooking and rebooking.all_confirmed:
             msg += f" Rebooked trip {rebooking.trip_id} for ₹{rebooking.total_charged:.2f}."
+        elif reconciliation is not None and reconciliation.action == "top_up_required":
+            msg += f" {reconciliation.message}"
 
         think("decision", "Disruption handling complete", msg)
 

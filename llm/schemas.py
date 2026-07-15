@@ -30,10 +30,19 @@ class TravelConstraints(BaseModel):
     origin_lat: float | None = None
     origin_lng: float | None = None
     destination: str | None = None
+    # The broad place (state/city) the agent last asked the user to narrow;
+    # repeating it or saying "just <place>" accepts it instead of looping.
+    narrowing_prompted_for: str | None = None
     start_date: str | None = None
     start_time: str | None = None
     deadline: str | None = None
     return_required: bool | None = None
+    # Return-journey slots: the return can start/end somewhere different from
+    # the onward destination/origin, so each is asked and stored separately.
+    return_origin: str | None = None
+    return_destination: str | None = None
+    return_date: str | None = None
+    return_time: str | None = None
     passenger_count: int = 1
     luggage_count: int = 0
     preference_weights: dict[str, float] = Field(default_factory=dict)

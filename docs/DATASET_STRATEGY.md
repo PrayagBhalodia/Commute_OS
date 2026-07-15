@@ -21,9 +21,9 @@ Commute OS scenarios. Records are normalized, PII-redacted, validated,
 deduplicated, grouped by scenario, and then split without group leakage.
 
 ```powershell
-python -m datasets.scripts.inspect_licenses
-python -m datasets.scripts.build_all --dry-run
-python -m datasets.scripts.build_all --max-per-source 5000
+python -m data_pipeline.scripts.inspect_licenses
+python -m data_pipeline.scripts.build_all --dry-run
+python -m data_pipeline.scripts.build_all --max-per-source 5000
 ```
 
 Raw, interim, and processed records are generated artifacts and are ignored by

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datasets.scripts.common import validate_record
+from data_pipeline.scripts.common import validate_record
 
 
 def normalize_records(records: list[dict]) -> tuple[list[dict], int]:

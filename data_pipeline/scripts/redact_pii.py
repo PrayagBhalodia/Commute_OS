@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datasets.scripts.common import redact_record
+from data_pipeline.scripts.common import redact_record
 
 
 def redact_records(records: list[dict]) -> tuple[list[dict], int]:

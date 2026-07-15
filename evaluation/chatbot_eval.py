@@ -9,7 +9,7 @@ import tempfile
 from collections import Counter
 from pathlib import Path
 
-from datasets.scripts.common import ROOT, read_jsonl
+from data_pipeline.scripts.common import ROOT, read_jsonl
 from llm.conversation_agent import ConversationAgent
 from llm.conversation_memory import ConversationMemory
 from llm.schemas import ChatMessageRequest

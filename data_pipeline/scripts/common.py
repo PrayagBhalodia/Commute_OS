@@ -12,9 +12,9 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 ROOT = Path(__file__).resolve().parents[2]
-RAW_DIR = ROOT / "datasets" / "raw"
-INTERIM_DIR = ROOT / "datasets" / "interim"
-PROCESSED_DIR = ROOT / "datasets" / "processed"
+RAW_DIR = ROOT / "data_pipeline" / "raw"
+INTERIM_DIR = ROOT / "data_pipeline" / "interim"
+PROCESSED_DIR = ROOT / "data_pipeline" / "processed"
 SYSTEM_MESSAGE = "You are Commute OS, an Indian journey-orchestration assistant."
 
 ALLOWED_TOOLS = {

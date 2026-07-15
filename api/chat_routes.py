@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
@@ -25,11 +26,18 @@ def build_chat_router(
     orchestrator: DMOSOrchestrator,
     *,
     rag_db_path: str | Path | None = None,
+    chat_db_path: str | Path | None = None,
 ) -> tuple[APIRouter, dict[str, Any]]:
     router = APIRouter()
     retriever = KnowledgeRetriever(db_path=rag_db_path)
     registry = ToolRegistry(orchestrator, retriever)
-    memory = ConversationMemory()
+    # Persist chat sessions so an API restart doesn't strand users
+    # mid-conversation with a session_id the server no longer knows.
+    memory = ConversationMemory(
+        db_path=str(chat_db_path)
+        if chat_db_path
+        else os.environ.get("COMMUTE_CHAT_DB", "data/chat_sessions.db")
+    )
     agent = ConversationAgent(registry, memory=memory)
 
     @router.post("/chat/message", response_model=ChatMessageResponse)

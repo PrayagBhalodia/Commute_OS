@@ -5,6 +5,9 @@ export interface JourneySegment {
   leg_id: string;
   from: string;
   to: string;
+  /** ISO timestamps from the leg, used to derive live progress. */
+  departure: string;
+  arrival: string;
 }
 
 /** Progress state used to label segments on the Active journey view. */
@@ -34,19 +37,33 @@ export function journeySegments(itinerary?: ItineraryOption | null): JourneySegm
     leg_id: leg.leg_id,
     from: leg.origin,
     to: leg.destination,
+    departure: leg.departure,
+    arrival: leg.arrival,
   }));
 }
 
 /**
- * Demo progress heuristic: the middle-ish leg is "ongoing", earlier legs are
- * "finished", later legs are "upcoming". With the classic 3-leg journey this
- * yields Finished → Ongoing → Upcoming. There is no live tracking backend, so
- * this gives a believable in-progress snapshot.
+ * Live progress from the segment's own schedule: finished once the arrival
+ * time has passed, ongoing between departure and arrival, upcoming before
+ * departure. A trip that hasn't started yet truthfully shows every segment
+ * as upcoming.
  */
-export function segmentProgress(index: number, total: number): SegmentProgress {
-  if (total <= 1) return "ongoing";
-  const ongoingIndex = Math.min(1, total - 1);
-  if (index < ongoingIndex) return "finished";
-  if (index === ongoingIndex) return "ongoing";
+export function segmentProgress(segment: JourneySegment, now: Date = new Date()): SegmentProgress {
+  const time = now.getTime();
+  if (new Date(segment.arrival).getTime() <= time) return "finished";
+  if (new Date(segment.departure).getTime() <= time) return "ongoing";
   return "upcoming";
+}
+
+/**
+ * Overall trip state for the Active page header: completed only when every
+ * segment has finished, upcoming until the first one starts, else ongoing
+ * (which includes waiting between two legs).
+ */
+export function journeyProgress(segments: JourneySegment[], now: Date = new Date()): SegmentProgress {
+  if (!segments.length) return "upcoming";
+  const states = segments.map((segment) => segmentProgress(segment, now));
+  if (states.every((state) => state === "finished")) return "finished";
+  if (states.every((state) => state === "upcoming")) return "upcoming";
+  return "ongoing";
 }

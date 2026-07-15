@@ -609,9 +609,9 @@ downloads an adapter.
 
 ```powershell
 pip install -r requirements-data.txt
-python -m datasets.scripts.inspect_licenses
-python -m datasets.scripts.build_all --dry-run
-python -m datasets.scripts.build_all --max-per-source 5000
+python -m data_pipeline.scripts.inspect_licenses
+python -m data_pipeline.scripts.build_all --dry-run
+python -m data_pipeline.scripts.build_all --max-per-source 5000
 python -m rag.ingest
 python -m rag.evaluation
 python -m evaluation.chatbot_eval

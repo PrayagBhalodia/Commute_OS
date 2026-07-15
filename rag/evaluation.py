@@ -6,7 +6,7 @@ import argparse
 import json
 from pathlib import Path
 
-from datasets.scripts.common import PROCESSED_DIR, read_jsonl
+from data_pipeline.scripts.common import PROCESSED_DIR, read_jsonl
 from rag.ingest import index_knowledge_base
 from rag.retriever import KnowledgeRetriever
 
@@ -17,7 +17,7 @@ def evaluate(*, db_path: str | Path | None = None, ensure_index: bool = True) ->
     retriever = KnowledgeRetriever(db_path=db_path)
     cases = read_jsonl(PROCESSED_DIR / "rag_evaluation.jsonl")
     if not cases:
-        from datasets.scripts.build_all import RAG_EVALUATION
+        from data_pipeline.scripts.build_all import RAG_EVALUATION
 
         cases = RAG_EVALUATION
     details = []

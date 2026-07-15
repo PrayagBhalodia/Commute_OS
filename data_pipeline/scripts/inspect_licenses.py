@@ -8,9 +8,9 @@ from pathlib import Path
 
 import yaml
 
-from datasets.scripts.common import ROOT
+from data_pipeline.scripts.common import ROOT
 
-MANIFEST = ROOT / "datasets" / "manifest" / "dataset_manifest.yaml"
+MANIFEST = ROOT / "data_pipeline" / "manifest" / "dataset_manifest.yaml"
 REQUIRED = {
     "name", "source_url", "publisher", "license", "intended_use",
     "commercial_use", "records", "languages", "relevant_fields",

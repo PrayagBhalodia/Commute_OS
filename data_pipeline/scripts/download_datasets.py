@@ -13,7 +13,7 @@ from urllib.parse import quote
 
 import httpx
 
-from datasets.scripts.common import RAW_DIR, write_jsonl
+from data_pipeline.scripts.common import RAW_DIR, write_jsonl
 
 SGD_ARCHIVE = "https://codeload.github.com/google-research-datasets/dstc8-schema-guided-dialogue/zip/refs/heads/master"
 HF_ROWS = "https://datasets-server.huggingface.co/rows"

@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections import Counter
 from typing import Any
 
-from datasets.scripts.common import ChatRecord, validate_record
+from data_pipeline.scripts.common import ChatRecord, validate_record
 
 
 def validate_records(records: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, Any]]:

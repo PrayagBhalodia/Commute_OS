@@ -10,7 +10,7 @@ import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { usePreferencesController } from "@/controllers/journey-controller";
 import { DEMO_USER_ID } from "@/constants/demo";
-import { PRIORITY_LABELS, TRIP_PRIORITIES, type TripPriority } from "@/lib/priority";
+import { JourneyStyleSelector } from "@/components/shared/JourneyStyleSelector";
 import type { UserPreferences } from "@/models/preferences";
 import {
   changePassword,
@@ -147,7 +147,6 @@ function PreferencesTab({ userId }: { userId: string }) {
   // Journey style is the shared optimisation lens (Time / Cost / Comfort) that
   // also drives the Plan page — both read and write the same store value.
   const priority = useJourneyStore((state) => state.priority);
-  const setPriority = useJourneyStore((state) => state.setPriority);
   const [modes, setModes] = useState<string[]>([]);
   const loadedFor = useRef<string | null>(null);
 
@@ -192,19 +191,7 @@ function PreferencesTab({ userId }: { userId: string }) {
     <div className="space-y-4 text-sm">
       <fieldset>
         <legend className="mb-1.5 font-medium text-slate-700">Journey style</legend>
-        <div className="grid grid-cols-3 gap-1 rounded-md bg-slate-100 p-1" role="group" aria-label="Journey style">
-          {TRIP_PRIORITIES.map((option: TripPriority) => (
-            <button
-              key={option}
-              type="button"
-              aria-pressed={priority === option}
-              className={cn("focus-ring rounded px-2 py-1.5", priority === option ? "bg-white font-medium text-slate-950 shadow-sm" : "text-slate-600")}
-              onClick={() => setPriority(option)}
-            >
-              {PRIORITY_LABELS[option]}
-            </button>
-          ))}
-        </div>
+        <JourneyStyleSelector variant="segmented" />
         <p className="mt-1.5 text-xs text-slate-400">Kept in sync with the Plan page.</p>
       </fieldset>
 

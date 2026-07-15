@@ -52,3 +52,8 @@ export interface ChatRequest {
   current_lng?: number;
   current_location_label?: string;
 }
+
+export interface ChatMessage {
+  role: "user" | "assistant";
+  text: string;
+}

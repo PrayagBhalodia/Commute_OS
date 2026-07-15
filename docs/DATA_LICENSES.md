@@ -1,7 +1,7 @@
 # Data Licenses
 
 The machine-readable source of truth is
-`datasets/manifest/dataset_manifest.yaml`; `data/dataset_manifest.yaml` is a
+`data_pipeline/manifest/dataset_manifest.yaml`; `data/dataset_manifest.yaml` is a
 compatibility pointer.
 
 | Source | License | Decision | Use |

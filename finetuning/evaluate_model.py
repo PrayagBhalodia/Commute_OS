@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 
-from datasets.scripts.common import PROCESSED_DIR, read_jsonl
+from data_pipeline.scripts.common import PROCESSED_DIR, read_jsonl
 from finetuning.inference import load_adapter
 
 

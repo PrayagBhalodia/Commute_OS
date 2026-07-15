@@ -8,9 +8,9 @@ Only English and Hinglish are retained. The default build downloads small,
 licensed subsets and generates domain-specific examples deterministically.
 
 ```powershell
-python -m datasets.scripts.inspect_licenses
-python -m datasets.scripts.build_all --dry-run
-python -m datasets.scripts.build_all --max-per-source 5000
+python -m data_pipeline.scripts.inspect_licenses
+python -m data_pipeline.scripts.build_all --dry-run
+python -m data_pipeline.scripts.build_all --max-per-source 5000
 ```
 
 External records retain their source and license. Do not redistribute a built

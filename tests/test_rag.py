@@ -31,7 +31,23 @@ def test_retrieval_returns_relevant_policy(tmp_path: Path, monkeypatch):
 
     assert results
     assert any(
-        item.source in {"airport_transfer_guidelines.md", "journey_buffer_rules.md"}
+        item.source in {"airport_transfer_guidance.md", "connection_buffer_guidance.md"}
         for item in results
     )
     assert all(item.score >= 0 for item in results)
+    assert all(item.license for item in results)
+    assert all(item.content_hash for item in results)
+
+
+def test_hinglish_retrieval_returns_policy(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("RAG_FORCE_HASH_EMBEDDINGS", "1")
+    db_path = tmp_path / "chroma"
+    index_knowledge_base(db_path=db_path, knowledge_dir=KNOWLEDGE_DIR)
+    retriever = KnowledgeRetriever(db_path=db_path)
+
+    results = retriever.search_knowledge(
+        "Flight baggage ke rules kya hain?",
+        top_k=4,
+    )
+
+    assert any(item.category == "baggage-guidance" for item in results)

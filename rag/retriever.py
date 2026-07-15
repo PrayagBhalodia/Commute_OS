@@ -22,6 +22,9 @@ class KnowledgeRetriever:
         limit = top_k or int(os.getenv("RAG_TOP_K", "4"))
         return self.store.query(query, category=category, top_k=limit)
 
+    def close(self) -> None:
+        self.store.close()
+
 
 _default_retriever: KnowledgeRetriever | None = None
 

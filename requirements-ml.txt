@@ -1,0 +1,8 @@
+# Optional LoRA training only. Do not install during normal app setup.
+-r requirements-data.txt
+transformers>=4.48,<5
+datasets>=3.2,<5
+peft>=0.14,<1
+trl>=0.13,<1
+accelerate>=1.2,<2
+torch>=2.3

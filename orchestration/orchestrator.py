@@ -653,6 +653,20 @@ class DMOSOrchestrator:
             raise ValueError("Selected route is not part of the active plan")
 
         groups: list[dict[str, Any]] = []
+
+        def option_payload(leg: LegOption) -> dict[str, Any]:
+            payload = leg.model_dump(mode="json")
+            premium = leg.metadata.get("variant") == "premium" or leg.comfort_score >= 0.85
+            specification = {
+                "cab": "XL / AC" if premium else "AC",
+                "auto": "Non-AC",
+                "flight": "Business" if premium else "Economy",
+                "train": "AC Sleeper" if premium else "AC Seater",
+                "bus": "AC Sleeper" if premium else "AC Seater",
+                "metro": "Standard AC",
+            }.get(leg.mode.value, "Standard")
+            payload["metadata"] = {**payload.get("metadata", {}), "specification": specification}
+            return payload
         for index, base_leg in enumerate(route.legs):
             previous_arrival = route.legs[index - 1].arrival if index else None
             next_departure = (
@@ -686,7 +700,7 @@ class DMOSOrchestrator:
                     "origin": base_leg.origin,
                     "destination": base_leg.destination,
                     "default_leg_id": base_leg.leg_id,
-                    "options": [leg.model_dump(mode="json") for leg in candidates],
+                    "options": [option_payload(leg) for leg in candidates],
                 }
             )
         return groups

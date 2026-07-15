@@ -1,0 +1,18 @@
+allowed_languages: [english, hinglish]
+seed: 42
+max_per_source: 5000
+split:
+  train: 0.8
+  validation: 0.1
+  test: 0.1
+quality:
+  minimum_characters: 8
+  maximum_characters: 4000
+  near_duplicate_threshold: 0.93
+downloads:
+  schema_guided_dialog: true
+  hinglish_everyday_conversations: true
+  air_dialogue: false
+synthetic:
+  variants_per_workflow_per_language: 2
+  use_llm: false

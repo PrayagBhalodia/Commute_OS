@@ -16,15 +16,34 @@ def _category(path: Path) -> str:
     return path.stem.replace("_", "-")
 
 
+def parse_frontmatter(text: str) -> tuple[dict[str, str | bool], str]:
+    """Parse the deliberately simple YAML front matter used by RAG documents."""
+    if not text.startswith("---"):
+        return {}, text
+    parts = text.split("---", 2)
+    if len(parts) < 3:
+        return {}, text
+    metadata: dict[str, str | bool] = {}
+    for line in parts[1].splitlines():
+        if ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        clean = value.strip().strip('"').strip("'")
+        metadata[key.strip()] = clean.lower() == "true" if clean.lower() in {"true", "false"} else clean
+    return metadata, parts[2].lstrip()
+
+
 def chunk_markdown(
     text: str,
     *,
     source: str,
     category: str,
     updated_at: str,
+    metadata: dict[str, str | bool] | None = None,
     target_size: int = 550,
     overlap: int = 100,
 ) -> list[KnowledgeChunk]:
+    metadata = metadata or {}
     headings: list[tuple[str, str]] = []
     section = "Overview"
     buffer: list[str] = []
@@ -80,6 +99,7 @@ def chunk_markdown(
             if piece:
                 identity = f"{source}|{section_name}|{piece}"
                 chunk_id = hashlib.sha256(identity.encode("utf-8")).hexdigest()
+                content_hash = hashlib.sha256(piece.encode("utf-8")).hexdigest()
                 chunks.append(
                     KnowledgeChunk(
                         chunk_id=chunk_id,
@@ -88,6 +108,15 @@ def chunk_markdown(
                         category=category,
                         section=section_name,
                         updated_at=updated_at,
+                        title=str(metadata.get("title", "")),
+                        region=str(metadata.get("region", "India")),
+                        operator=str(metadata.get("operator", "")),
+                        source_url=str(metadata.get("source_url", "")),
+                        source_type=str(metadata.get("source_type", "project-authored")),
+                        license=str(metadata.get("license", "project-generated")),
+                        retrieved_at=str(metadata.get("retrieved_at", updated_at)),
+                        is_simulated=bool(metadata.get("is_simulated", False)),
+                        content_hash=content_hash,
                     )
                 )
             if end >= len(body):
@@ -102,19 +131,20 @@ def index_knowledge_base(
     knowledge_dir: str | Path | None = None,
 ) -> IndexStats:
     root = Path(knowledge_dir) if knowledge_dir else KNOWLEDGE_DIR
-    paths = sorted(root.glob("*.md"))
+    paths = sorted(root.rglob("*.md"))
     chunks: list[KnowledgeChunk] = []
     for path in paths:
         stat = path.stat()
-        updated_at = datetime.fromtimestamp(
-            stat.st_mtime, tz=timezone.utc
-        ).isoformat()
+        fallback_updated_at = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat()
+        metadata, body = parse_frontmatter(path.read_text(encoding="utf-8"))
+        updated_at = str(metadata.get("updated_at") or fallback_updated_at)
         chunks.extend(
             chunk_markdown(
-                path.read_text(encoding="utf-8"),
+                body,
                 source=path.name,
-                category=_category(path),
+                category=str(metadata.get("category") or _category(path)),
                 updated_at=updated_at,
+                metadata=metadata,
             )
         )
     store = ChromaVectorStore(db_path=db_path)

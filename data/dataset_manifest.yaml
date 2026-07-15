@@ -1,0 +1,3 @@
+# Canonical manifest lives at datasets/manifest/dataset_manifest.yaml.
+# This compatibility pointer is retained for tooling that expects data/.
+manifest_path: ../datasets/manifest/dataset_manifest.yaml

@@ -1,13 +1,14 @@
 "use client";
 
 import { useState } from "react";
+import { useRouter } from "next/navigation";
 import { Loader2, LocateFixed, Send } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/input";
 import { formatInr } from "@/lib/utils";
 import type { ChatAction, ChatResponse } from "@/models/chat";
-import type { PlanResponse } from "@/models/journey";
+import type { ItineraryOption, PlanResponse } from "@/models/journey";
 import { sendChatMessage } from "@/services/chat-service";
 import { getStoredToken } from "@/services/auth-service";
 import { useJourneyStore } from "@/store/journey-store";
@@ -19,12 +20,15 @@ interface Message {
 
 export function ConversationalAssistant({ onAuthRequired }: { onAuthRequired: () => void }) {
   const [input, setInput] = useState("");
-  const [messages, setMessages] = useState<Message[]>([]);
+  const [messages, setMessages] = useState<Message[]>([
+    { role: "assistant", text: "Hi, where are you heading today?" },
+  ]);
   const [latest, setLatest] = useState<ChatResponse>();
   const [sessionId, setSessionId] = useState<string>();
   const [loading, setLoading] = useState(false);
   const userId = useJourneyStore((state) => state.userId);
   const setPlan = useJourneyStore((state) => state.setPlan);
+  const router = useRouter();
 
   async function submit(message = input.trim(), location?: GeolocationCoordinates) {
     if (!message || loading) return;
@@ -57,6 +61,29 @@ export function ConversationalAssistant({ onAuthRequired }: { onAuthRequired: ()
       if (planned) {
         setPlan({ ...planned, chain_of_thought: planned.chain_of_thought ?? [] } as PlanResponse);
       }
+      const composed = response.tool_results.find(
+        (item) => item.ok && item.tool === "compose_journey",
+      )?.data as unknown as ItineraryOption | undefined;
+      if (composed?.itinerary_id) {
+        const current = useJourneyStore.getState().activePlan;
+        if (current) {
+          useJourneyStore.setState({
+            activePlan: {
+              ...current,
+              itineraries: [
+                ...current.itineraries.filter(
+                  (item) => item.itinerary_id !== composed.itinerary_id,
+                ),
+                composed,
+              ],
+              selected_itinerary_id: composed.itinerary_id,
+            },
+            selectedItineraryId: composed.itinerary_id,
+          });
+        }
+      } else if (response.journey_review?.itinerary_id) {
+        useJourneyStore.getState().selectItinerary(response.journey_review.itinerary_id);
+      }
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "The journey assistant could not respond.");
     } finally {
@@ -85,6 +112,7 @@ export function ConversationalAssistant({ onAuthRequired }: { onAuthRequired: ()
 
   function runAction(action: ChatAction) {
     if (action.kind === "location") requestLocation(action);
+    else if (action.kind === "link" && action.href) router.push(action.href);
     else void submit(action.message);
   }
 
@@ -106,7 +134,7 @@ export function ConversationalAssistant({ onAuthRequired }: { onAuthRequired: ()
               <div className="mt-2 flex flex-wrap gap-2">
                 {group.options.map((option, index) => (
                   <Button key={option.leg_id} variant="secondary" size="sm" onClick={() => void submit(`Leg ${group.leg_number} option ${index + 1}`)} disabled={loading}>
-                    {option.mode} · {option.operator} · {formatInr(option.price)}
+                    {option.mode} · {String(option.metadata.specification ?? option.operator)} · {formatInr(option.price)}
                   </Button>
                 ))}
               </div>

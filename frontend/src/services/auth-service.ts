@@ -1,4 +1,6 @@
 import { apiClient } from "./api-client";
+import { deleteChatSession } from "./chat-service";
+import { useJourneyStore } from "@/store/journey-store";
 
 export type AuthUser = {
   id: string;
@@ -94,12 +96,27 @@ export async function logout() {
   clearSession();
 }
 
+// Wipe the persisted chat transcript so one account's conversation never
+// carries over to the next sign-in (or lingers after sign-out). Best-effort
+// deletes the server-side session too, then clears the local store.
+function clearChatState() {
+  const sessionId = useJourneyStore.getState().chatSessionId;
+  if (sessionId) {
+    void deleteChatSession(sessionId).catch(() => undefined);
+  }
+  useJourneyStore.getState().clearChat();
+}
+
 export function saveSession(session: AuthSession) {
+  // Start a fresh chat for the account that is signing in.
+  clearChatState();
   localStorage.setItem(TOKEN_KEY, session.token);
   localStorage.setItem(USER_KEY, JSON.stringify(session.user));
 }
 
 export function clearSession() {
+  // Drop the chat on sign-out (explicit logout and session-expiry both land here).
+  clearChatState();
   localStorage.removeItem(TOKEN_KEY);
   localStorage.removeItem(USER_KEY);
 }

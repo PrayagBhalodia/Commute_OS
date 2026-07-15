@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { Clock, MapPin, WalletCards } from "lucide-react";
 import { ConversationalAssistant } from "@/components/assistant/ConversationalAssistant";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -22,11 +22,15 @@ export default function HomePage() {
   const { balanceQuery } = useWalletController(userId);
   const prefs = usePreferencesController(userId);
   const health = useHealth();
-  const greeting = useMemo(() => ASSISTANT_GREETINGS[new Date().getMinutes() % ASSISTANT_GREETINGS.length], []);
+  // Greeting depends on the current time, which can differ between the server
+  // render and the client render, so it's picked only after mount to avoid a
+  // hydration mismatch.
+  const [greeting, setGreeting] = useState(ASSISTANT_GREETINGS[0]);
   // Personalised aside cards are only meaningful for a signed-in traveller.
   const [signedIn, setSignedIn] = useState(false);
 
   useEffect(() => {
+    setGreeting(ASSISTANT_GREETINGS[new Date().getMinutes() % ASSISTANT_GREETINGS.length]);
     setSignedIn(Boolean(getStoredToken()));
   }, []);
 

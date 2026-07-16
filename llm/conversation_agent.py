@@ -559,8 +559,13 @@ class ConversationAgent:
             # pre-empt the device-coordinate resolution in handle(), which
             # runs later and needs to see the slot still empty.
             location_intent = re.search(r"\b(current location|my location)\b", lower) is not None
-            if state.status == "waiting_for_origin":
-                if not location_intent:
+            # A typed place name while we are still offering the "current vs
+            # manual" origin choice is the origin itself (e.g. the origin
+            # autocomplete submits "Mumbai Airport") — capture it instead of
+            # re-asking. The manual-entry quick-reply is not a place name.
+            manual_intent = re.search(r"\b(manual|manually|enter|type)\b", lower) is not None
+            if state.status in ("waiting_for_origin", "awaiting_origin_choice"):
+                if not location_intent and not manual_intent:
                     constraints.origin = self._clean_place(text)
             elif state.status == "waiting_for_destination":
                 if not location_intent:

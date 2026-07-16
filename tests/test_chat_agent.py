@@ -531,6 +531,91 @@ def test_specific_destination_skips_drilling(tmp_path, monkeypatch):
     assert "where in" not in response.message.lower()
 
 
+def test_llm_wrapper_pinpoints_broad_destination(tmp_path, monkeypatch):
+    # Regression: the LLM slot-filler accepts a whole state as the destination
+    # and tries to move on to the origin. Pin-pointing must interrupt and drill
+    # state -> city -> locality, then accept and pin the specific place so it is
+    # never re-asked while the remaining slots are collected.
+    client = ScriptedChatClient(
+        [
+            {"slots": {"destination": "Gujarat"}, "reply": "Where are you starting from?"},
+            {"slots": {"destination": "Ahmedabad"}, "reply": "Where are you starting from?"},
+            {"slots": {"destination": "Navrangpura"}, "reply": "Where are you starting from?"},
+        ]
+    )
+    agent = make_agent(tmp_path, monkeypatch, client=client)
+    stub_place_classifier(
+        monkeypatch,
+        {"gujarat": "state", "ahmedabad": "city", "navrangpura": "specific"},
+    )
+
+    # A whole state overrides the LLM's "where are you starting from?".
+    response = agent.handle(ChatMessageRequest(user_id="pin", message="Gujarat"))
+    assert "where in Gujarat" in response.message
+    assert response.state.status == "waiting_for_destination"
+
+    # A city is still broad -> drill one more level.
+    response = agent.handle(
+        ChatMessageRequest(session_id=response.session_id, user_id="pin", message="Ahmedabad")
+    )
+    assert "Where in Ahmedabad" in response.message
+    assert response.state.status == "waiting_for_destination"
+
+    # A specific locality is accepted, pinned, and the flow moves past destination.
+    response = agent.handle(
+        ChatMessageRequest(session_id=response.session_id, user_id="pin", message="Navrangpura")
+    )
+    assert "where in" not in response.message.lower()
+    assert response.state.constraints.destination == "Navrangpura"
+    assert response.state.constraints.destination_pinned == "Navrangpura"
+    assert response.state.status != "waiting_for_destination"
+
+
+def test_broad_return_destination_is_pinpointed(tmp_path, monkeypatch):
+    # The trip's final endpoint (return destination) is drilled down the same
+    # way as the onward destination, independently pinned.
+    client = ScriptedChatClient(
+        [
+            {"slots": {}, "reply": "Where should your return journey start?"},
+            {"slots": {"return_origin": "Jio Institute"}, "reply": "Where should it end?"},
+            {"slots": {"return_destination": "Gujarat"}, "reply": "What date is the return?"},
+            {"slots": {"return_destination": "Gandhinagar"}, "reply": "What date is the return?"},
+        ]
+    )
+    agent = make_agent(tmp_path, monkeypatch, client=client)
+    stub_place_classifier(monkeypatch, {"gujarat": "state", "gandhinagar": "specific"})
+
+    response = agent.handle(
+        ChatMessageRequest(
+            user_id="ret",
+            message="Plan a trip from Mumbai Airport to Jio Institute on 2026-08-01 at 9 am, and I need a return journey",
+        )
+    )
+    assert response.state.status == "waiting_for_return_origin"
+
+    response = agent.handle(
+        ChatMessageRequest(session_id=response.session_id, user_id="ret", message="Same as Jio Institute")
+    )
+    assert response.state.status == "waiting_for_return_destination"
+
+    # Broad return destination -> pin-point it, mentioning the return journey.
+    response = agent.handle(
+        ChatMessageRequest(session_id=response.session_id, user_id="ret", message="Gujarat")
+    )
+    assert "where in Gujarat" in response.message
+    assert "return journey" in response.message
+    assert response.state.status == "waiting_for_return_destination"
+
+    # Specific place is accepted, pinned independently, and the flow proceeds.
+    response = agent.handle(
+        ChatMessageRequest(session_id=response.session_id, user_id="ret", message="Gandhinagar")
+    )
+    assert "where in" not in response.message.lower()
+    assert response.state.constraints.return_destination == "Gandhinagar"
+    assert response.state.constraints.return_destination_pinned == "Gandhinagar"
+    assert response.state.status != "waiting_for_return_destination"
+
+
 def test_return_journey_slots_collected_one_at_a_time(tmp_path, monkeypatch):
     agent = make_agent(tmp_path, monkeypatch)
     response = agent.handle(

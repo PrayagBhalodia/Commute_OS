@@ -327,59 +327,78 @@ class ConversationAgent:
         )
         return reply, self._slot_actions(missing, constraints), "llm"
 
-    def _destination_narrowing_question(
-        self, state: ConversationState, message: str, hinglish: bool
+    def _place_narrowing_question(
+        self,
+        state: ConversationState,
+        message: str,
+        hinglish: bool,
+        *,
+        place_field: str = "destination",
+        prompted_field: str = "narrowing_prompted_for",
+        pinned_field: str = "destination_pinned",
+        en_verb: str = "do you need to go",
+        hi_verb: str = "jana hai",
     ) -> str | None:
-        """Follow-up question when the destination is a whole country/state/city.
+        """Follow-up question when a place slot is a whole country/state/city.
 
         Classification comes from the live geocoder (works for any region
         worldwide), so "Texas" → where in Texas?, "Paris" → where in Paris?
-        Repeating the same place (or "just <place>") accepts it as-is.
+        Repeating the same place (or "just <place>") accepts it as-is. The same
+        drill-down serves the onward destination and the return destination by
+        pointing it at different slot/tracking fields.
         """
         constraints = state.constraints
-        destination = (constraints.destination or "").strip()
-        if not destination:
+        place = (getattr(constraints, place_field) or "").strip()
+        if not place:
             return None
-        prompted = (constraints.narrowing_prompted_for or "").strip()
+        # Already pinned this exact place (accepted, or specific enough) — never
+        # narrow it again, even while later slots (date/time) are collected.
+        pinned = (getattr(constraints, pinned_field) or "").strip()
+        if pinned and pinned.lower() == place.lower():
+            return None
+        prompted = (getattr(constraints, prompted_field) or "").strip()
 
         if prompted:
-            if destination.lower() == prompted.lower():
+            if place.lower() == prompted.lower():
                 # They repeated the broad place — keep it and move on.
-                constraints.narrowing_prompted_for = None
+                setattr(constraints, prompted_field, None)
+                setattr(constraints, pinned_field, place)
                 return None
             if (
                 ACCEPT_BROAD_RE.search(message)
-                and classify_place(destination) == "unknown"
+                and classify_place(place) == "unknown"
             ):
                 # "Just Ahmedabad is fine" clobbered the slot with filler
                 # text; restore the place they are accepting.
-                constraints.destination = prompted
-                constraints.narrowing_prompted_for = None
+                setattr(constraints, place_field, prompted)
+                setattr(constraints, prompted_field, None)
+                setattr(constraints, pinned_field, prompted)
                 return None
 
-        specificity = classify_place(destination)
+        specificity = classify_place(place)
         if specificity not in ("country", "state", "city"):
-            constraints.narrowing_prompted_for = None
+            setattr(constraints, prompted_field, None)
+            setattr(constraints, pinned_field, place)
             return None
 
-        constraints.narrowing_prompted_for = destination
+        setattr(constraints, prompted_field, place)
         if specificity in ("country", "state"):
             region_word = "country" if specificity == "country" else "state"
             return (
-                f"{destination} me kahan jana hai? Koi city ya specific jagah batao."
+                f"{place} me kahan {hi_verb}? Koi city ya specific jagah batao."
                 if hinglish
                 else (
-                    f"{destination} is a whole {region_word} — where in {destination} "
-                    "do you need to go? A city or a specific place helps."
+                    f"{place} is a whole {region_word} — where in {place} "
+                    f"{en_verb}? A city or a specific place helps."
                 )
             )
         return (
-            f"{destination} me exactly kahan? Koi locality ya landmark batao, "
-            f"ya bolo 'just {destination}'."
+            f"{place} me exactly kahan? Koi locality ya landmark batao, "
+            f"ya bolo 'just {place}'."
             if hinglish
             else (
-                f"Where in {destination} exactly — a locality, landmark, or "
-                f"address? Say 'just {destination}' if the city is enough."
+                f"Where in {place} exactly — a locality, landmark, or "
+                f"address? Say 'just {place}' if the city is enough."
             )
         )
 
@@ -606,15 +625,62 @@ class ConversationAgent:
             for item in results
         ]
 
+    def ask_knowledge(self, query: str, top_k: int = 4) -> tuple[str, list[Citation]]:
+        """Standalone RAG Q&A: retrieve policy chunks and return a concise,
+        grounded answer plus its citations.
+
+        Powers the home "Ask a question" panel and reuses the same concise
+        summariser as the chat's policy branch, so answers stay short and cited.
+        """
+        results = self.registry.retriever.search_knowledge(query, None, top_k)
+        items = [item.model_dump(mode="json") for item in results]
+        return self._policy_answer(items, query), self._citations(items)
+
     @staticmethod
-    def _policy_answer(results: list[dict[str, Any]]) -> str:
+    def _cosine(a: list[float], b: list[float]) -> float:
+        # Embeddings are L2-normalized (both backends), so cosine == dot product.
+        return sum(x * y for x, y in zip(a, b))
+
+    def _policy_answer(self, results: list[dict[str, Any]], query: str) -> str:
+        """A short, direct answer distilled from the retrieved policy chunks.
+
+        Rather than dumping whole passages (a wall of text), split the top
+        chunks into sentences and keep the two most relevant to the question —
+        ranked by the same semantic embedder used for retrieval. General for any
+        policy topic; nothing about the query or answer is hardcoded.
+        """
         if not results:
             return (
                 "I could not find that in the local policy knowledge base. "
                 "For current operator rules, verify with the operator directly."
             )
-        passages = [item["text"].strip() for item in results[:2]]
-        return " ".join(passages)
+        seen: set[str] = set()
+        sentences: list[str] = []
+        for item in results[:3]:
+            for raw in re.split(r"(?<=[.!?])\s+", (item.get("text") or "").strip()):
+                sentence = raw.strip()
+                key = sentence.lower()
+                if len(sentence) >= 30 and key not in seen:
+                    seen.add(key)
+                    sentences.append(sentence)
+        if not sentences:
+            return (results[0].get("text") or "")[:300].strip()
+
+        embedder = self.registry.retriever.store.embedder
+        query_vec = embedder.encode([query])[0]
+        sentence_vecs = embedder.encode(sentences)
+        ranked = sorted(
+            range(len(sentences)),
+            key=lambda i: self._cosine(query_vec, sentence_vecs[i]),
+            reverse=True,
+        )
+        # Keep the two best sentences but restore original order so it reads
+        # naturally; if those two are already long, one sentence is enough.
+        best = sorted(ranked[:2])
+        answer = " ".join(sentences[i] for i in best)
+        if len(answer) > 420:
+            answer = sentences[ranked[0]]
+        return answer
 
     @staticmethod
     def _plan_summary(data: dict[str, Any]) -> str:
@@ -1047,7 +1113,7 @@ class ConversationAgent:
             )
             items = result.get("data", {}).get("results", []) if result["ok"] else []
             citations = self._citations(items)
-            answer = self._policy_answer(items)
+            answer = self._policy_answer(items, request.message)
 
         elif "balance" in lower and "wallet" in lower:
             result = self._execute(
@@ -1287,6 +1353,71 @@ class ConversationAgent:
                 suggested_actions.extend(llm_actions)
                 mode = llm_mode or "llm"
 
+            # Destination pin-pointing runs before the rest of the intent flow
+            # and regardless of whether the LLM wrapper or the deterministic
+            # controller produced the answer above. A broad destination (a whole
+            # country/state/city) is narrowed to a specific place before we move
+            # on to the origin, dates, or planning — so an LLM turn that accepted
+            # "Gujarat" and jumped ahead to the origin/date still gets
+            # interrupted to pin down where in Gujarat. classify_place() is
+            # geocoder-backed and cached, so this works for any region worldwide
+            # and returns None (no question) once the place is specific enough or
+            # the user has accepted it.
+            in_intent_phase = state.status in {
+                "collecting_intent",
+                "awaiting_origin_choice",
+                "waiting_for_location_permission",
+                "waiting_for_origin",
+                "waiting_for_destination",
+                "waiting_for_start_date",
+                "waiting_for_start_time",
+                "waiting_for_return",
+                "waiting_for_return_origin",
+                "waiting_for_return_destination",
+                "waiting_for_return_date",
+                "waiting_for_return_time",
+            }
+            narrowing_question = (
+                self._place_narrowing_question(state, request.message, hinglish)
+                if state.constraints.destination and in_intent_phase
+                else None
+            )
+            narrowing_slot_status = "waiting_for_destination"
+            broad_place = state.constraints.destination
+            # Once the onward destination is settled, pin-point the return
+            # destination (the trip's final endpoint) the same way.
+            if (
+                narrowing_question is None
+                and state.constraints.return_destination
+                and in_intent_phase
+            ):
+                return_question = self._place_narrowing_question(
+                    state,
+                    request.message,
+                    hinglish,
+                    place_field="return_destination",
+                    prompted_field="return_narrowing_prompted_for",
+                    pinned_field="return_destination_pinned",
+                    en_verb="should the return journey end",
+                    hi_verb="return khatam hogi",
+                )
+                if return_question:
+                    narrowing_question = return_question
+                    narrowing_slot_status = "waiting_for_return_destination"
+                    broad_place = state.constraints.return_destination
+            if narrowing_question:
+                state.status = narrowing_slot_status
+                answer = narrowing_question
+                # We are asking about a destination now, so any origin or
+                # location quick-replies from the LLM step no longer apply.
+                suggested_actions = [
+                    SuggestedAction(
+                        id="keep_broad_destination",
+                        label=f"Just {broad_place}",
+                        message=f"Just {broad_place} is fine",
+                    )
+                ]
+
             is_travel = answer is None and (
                 self._contains_any(lower, TRAVEL_TERMS)
                 or state.status.startswith("waiting_for_")
@@ -1294,45 +1425,10 @@ class ConversationAgent:
                 or state.constraints.origin is not None
                 or state.constraints.destination is not None
             )
-            # Narrow broad destinations first (a state → which city? → a city
-            # → where exactly?) while the destination is still being
-            # collected. May restore a clobbered slot, so read
-            # origin/destination afterwards.
-            narrowing_statuses = {
-                "collecting_intent",
-                "waiting_for_destination",
-                "waiting_for_origin",
-                "awaiting_origin_choice",
-                "waiting_for_location_permission",
-            }
-            narrowing_question = (
-                self._destination_narrowing_question(state, request.message, hinglish)
-                if is_travel and (
-                    # Actively collecting/confirming the destination.
-                    state.status in {"collecting_intent", "waiting_for_destination"}
-                    # Or catching a "Just <place> is fine" reply that landed
-                    # while a later question (origin/location) was already
-                    # asked — only relevant mid-restore, never as a fresh ask.
-                    or (
-                        state.constraints.narrowing_prompted_for
-                        and state.status in narrowing_statuses
-                    )
-                )
-                else None
-            )
+            # Narrowing may restore a clobbered slot, so read these afterwards.
             origin = state.constraints.origin
             destination = state.constraints.destination
-            if is_travel and narrowing_question:
-                state.status = "waiting_for_destination"
-                answer = narrowing_question
-                suggested_actions.append(
-                    SuggestedAction(
-                        id="keep_broad_destination",
-                        label=f"Just {destination}",
-                        message=f"Just {destination} is fine",
-                    )
-                )
-            elif is_travel and not origin:
+            if is_travel and not origin:
                 wants_current = bool(re.search(r"\b(current|my location|here)\b", lower))
                 wants_manual = bool(re.search(r"\b(manual|enter|type)\b", lower))
                 # Note: "use current location" WITH coordinates never reaches

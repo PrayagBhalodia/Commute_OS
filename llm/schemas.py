@@ -33,6 +33,10 @@ class TravelConstraints(BaseModel):
     # The broad place (state/city) the agent last asked the user to narrow;
     # repeating it or saying "just <place>" accepts it instead of looping.
     narrowing_prompted_for: str | None = None
+    # The destination value that has been pinned down (specific enough, or
+    # explicitly accepted as-is). Once set, that exact place is never narrowed
+    # again, even as later slots like date/time are still being collected.
+    destination_pinned: str | None = None
     start_date: str | None = None
     start_time: str | None = None
     deadline: str | None = None
@@ -41,6 +45,10 @@ class TravelConstraints(BaseModel):
     # the onward destination/origin, so each is asked and stored separately.
     return_origin: str | None = None
     return_destination: str | None = None
+    # Same broad-place narrowing tracking as the onward destination, but for the
+    # return destination (the trip's final endpoint), pinned independently.
+    return_narrowing_prompted_for: str | None = None
+    return_destination_pinned: str | None = None
     return_date: str | None = None
     return_time: str | None = None
     passenger_count: int = 1

@@ -14,10 +14,14 @@ from rag.schemas import KnowledgeChunk, SearchResult
 
 
 class LocalEmbedder:
-    """Use sentence-transformers when available, otherwise feature hashing.
+    """Semantic embeddings via sentence-transformers, hashing as a fallback.
 
-    Model downloads are opt-in with RAG_ALLOW_MODEL_DOWNLOAD=1. The hashing
-    fallback is deterministic, private, and sufficient for offline operation.
+    By default this loads a sentence-transformers model (real meaning-based
+    vectors: "cab" ≈ "taxi", "how early" ≈ "buffer time"). If the library or
+    model is unavailable — not installed, or offline with no cached weights and
+    RAG_ALLOW_MODEL_DOWNLOAD disabled — it degrades silently to a deterministic
+    feature-hashing (word-overlap) embedder that needs no downloads. Set
+    RAG_FORCE_HASH_EMBEDDINGS=1 to force the offline hashing path (used by tests).
     """
 
     def __init__(self, model_name: str | None = None) -> None:
@@ -35,29 +39,55 @@ class LocalEmbedder:
         force_hashing = os.getenv(
             "RAG_FORCE_HASH_EMBEDDINGS", "0"
         ).lower() in truthy
-        use_transformer = os.getenv(
-            "RAG_USE_SENTENCE_TRANSFORMERS", "0"
-        ).lower() in truthy
-        allow_download = os.getenv(
-            "RAG_ALLOW_MODEL_DOWNLOAD", "0"
-        ).lower() in truthy
-        if force_hashing or not (use_transformer or allow_download):
+        if force_hashing:
             self._model_checked = True
             return None
+        # Allow a one-time model download by default; when offline this simply
+        # fails and we fall back to hashing rather than blocking retrieval.
+        allow_download = os.getenv(
+            "RAG_ALLOW_MODEL_DOWNLOAD", "1"
+        ).lower() in truthy
         with self._lock:
             if self._model_checked:
                 return self._model
+            model = None
             try:
                 from sentence_transformers import SentenceTransformer
 
-                self._model = SentenceTransformer(
-                    self.model_name,
-                    local_files_only=not allow_download,
-                )
+                try:
+                    # Cache-first: never touch the network when the model is
+                    # already downloaded, so warm boots are instant and work
+                    # offline (no Hugging Face HEAD requests / retries).
+                    model = SentenceTransformer(self.model_name, local_files_only=True)
+                except Exception:
+                    # Not cached yet — download once if allowed, else fall back.
+                    if not allow_download:
+                        raise
+                    model = SentenceTransformer(self.model_name, local_files_only=False)
             except Exception:
-                self._model = None
+                # sentence-transformers/torch missing, or the model is not
+                # available offline: use the deterministic hashing embedder.
+                model = None
+            self._model = model
             self._model_checked = True
         return self._model
+
+    @property
+    def is_semantic(self) -> bool:
+        """True when the sentence-transformers model is actually loaded."""
+        return self._load_model() is not None
+
+    def signature(self) -> str:
+        """Stable id for the active backend, used to key the vector collection.
+
+        Semantic and hashing vectors occupy different spaces, so each backend
+        gets its own Chroma collection — switching backends can never compare
+        incompatible embeddings; it just (re)builds the correct collection.
+        """
+        if self._load_model() is not None:
+            slug = re.sub(r"[^a-z0-9]+", "_", self.model_name.lower()).strip("_")
+            return f"st_{slug}"
+        return "hash384"
 
     @staticmethod
     def _hash_embedding(text: str, dimensions: int = 384) -> list[float]:
@@ -80,8 +110,6 @@ class LocalEmbedder:
 
 
 class ChromaVectorStore:
-    collection_name = "dmos_knowledge_v2"
-
     def __init__(
         self,
         db_path: str | Path | None = None,
@@ -98,6 +126,10 @@ class ChromaVectorStore:
             raise RuntimeError(
                 "chromadb is required for RAG; install requirements.txt"
             ) from exc
+        # Key the collection to the embedder backend so semantic and hashing
+        # vectors never share a space; switching backends targets a fresh
+        # collection that the boot-time indexer rebuilds automatically.
+        self.collection_name = f"dmos_knowledge_{self.embedder.signature()}"
         self.client = chromadb.PersistentClient(path=str(self.db_path))
         self.collection = self.client.get_or_create_collection(
             name=self.collection_name,

@@ -129,6 +129,7 @@ def index_knowledge_base(
     *,
     db_path: str | Path | None = None,
     knowledge_dir: str | Path | None = None,
+    store: ChromaVectorStore | None = None,
 ) -> IndexStats:
     root = Path(knowledge_dir) if knowledge_dir else KNOWLEDGE_DIR
     paths = sorted(root.rglob("*.md"))
@@ -147,7 +148,9 @@ def index_knowledge_base(
                 metadata=metadata,
             )
         )
-    store = ChromaVectorStore(db_path=db_path)
+    # Reuse the caller's store when given, so we don't open a second Chroma
+    # client on the same path (e.g. indexing into a live retriever's store).
+    store = store or ChromaVectorStore(db_path=db_path)
     added, existing = store.upsert(chunks)
     return IndexStats(
         documents=len(paths),

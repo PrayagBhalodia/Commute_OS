@@ -30,6 +30,12 @@ def build_chat_router(
 ) -> tuple[APIRouter, dict[str, Any]]:
     router = APIRouter()
     retriever = KnowledgeRetriever(db_path=rag_db_path)
+    # Build the policy knowledge index on boot when it is empty. Upsert-by-
+    # content-id is idempotent, so warm starts are cheap, and this self-heals a
+    # fresh or wiped Chroma store — otherwise every policy question comes back
+    # "I could not find that in the local policy knowledge base."
+    if retriever.store.count() == 0:
+        index_knowledge_base(store=retriever.store)
     registry = ToolRegistry(orchestrator, retriever)
     # Persist chat sessions so an API restart doesn't strand users
     # mid-conversation with a session_id the server no longer knows.
@@ -68,11 +74,22 @@ def build_chat_router(
             "results": [item.model_dump(mode="json") for item in results],
         }
 
+    @router.post("/rag/ask")
+    def rag_ask(body: RagSearchRequest) -> dict[str, Any]:
+        # Concise, grounded answer for the home "Ask a question" panel — same
+        # summariser and citations the chat uses for policy questions.
+        answer, citations = agent.ask_knowledge(body.query, body.top_k)
+        return {
+            "query": body.query,
+            "answer": answer,
+            "citations": [item.model_dump(mode="json") for item in citations],
+        }
+
     @router.post("/rag/reindex")
     def rag_reindex(body: RagReindexRequest) -> dict[str, Any]:
         # Upsert-by-content-id is idempotent. Rebuild is retained in the API
         # contract for future corpus deletion but never destroys data silently.
-        stats = index_knowledge_base(db_path=retriever.store.db_path)
+        stats = index_knowledge_base(store=retriever.store)
         return {
             **stats.model_dump(mode="json"),
             "rebuild_requested": body.rebuild,
